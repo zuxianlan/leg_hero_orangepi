@@ -1,0 +1,38 @@
+# 构建产物
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+install/
+out/
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.bin
+*.elf
+*.hex
+*.out
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+.marscode/
+*.iml
+*.swp
+*~
+
+# 运行与日志
+tmp/
+log/
+logs/
+*.log
+core
+core.*
+
+# 系统文件
+.DS_Store
+Thumbs.db
