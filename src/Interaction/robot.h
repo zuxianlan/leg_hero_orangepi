@@ -187,7 +187,7 @@ public:
     Class_Slope Slope_Leg_l;
     Class_Slope Slope_Leg_r;
 
-    Class_PID PID_Fallow_yaw;
+    Class_PID PID_Follow_yaw;
 
     class_Chassis Chassis;
     Enum_chassis_mode chassis_mode;

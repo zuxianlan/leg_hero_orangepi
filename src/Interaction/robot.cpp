@@ -359,14 +359,23 @@ void Robot::Init()
     Slope_Omega.Set_Adaptive_Gain(0.20f);
     Slope_Omega.Set_Max_Adaptive_Ratio(4.0f);
 
-    PID_Fallow_yaw.Init(10.0f, 0.1f, 0.01f, 0.0f, 0.3f, 4.0f, 0.002f, 0.0f, 0.0f, 0.0f, 0.0f, PID_D_First_DISABLE);
+    PID_Follow_yaw.Init(10.0f, 0.1f, 0.01f, 0.0f, 0.3f, 4.0f, 0.002f, 0.0f, 0.0f, 0.0f, 0.0f, PID_D_First_DISABLE);
 }
 
+// ===================================================================
+// 函数: Chassis_Control()
+// 功能: 底盘主控制函数，根据遥控器模式和底盘状态机，
+//       计算并下发底盘运动目标值（速度、角度、高度等）
+// 调用周期: 1ms (由定时中断触发)
+// ===================================================================
 void Robot::Chassis_Control()
 {
-    // �ٶ�������Ӽ��ٹ�?����
+    // 超级电容加速模式下的最大速度/角速度临时变量
     float tmp_chassis_velocity_max, tmp_chassis_omega_max;
+    // mod: 空中状态超时计数器（用于跳跃空中阶段超时保护）
     static int mod = 0;
+
+    // --- 1. 超级电容加速模式：提高速度上限和斜坡增速率 ---
     if (Supercap_Accelerate_Status == true)
     {
         tmp_chassis_velocity_max = 4.0f;
@@ -380,100 +389,101 @@ void Robot::Chassis_Control()
         Slope_X.Set_Increase_Value(3.0f / 1000.0f);
     }
 
+    // --- 2. 根据遥控器开关选择底盘控制模式 ---
     // set chassis control mod
     if (RC.zero_force)
     {
-        chassis_mode = CHASSIS_ZERO_FORCE;
+        chassis_mode = CHASSIS_ZERO_FORCE;                 // 零力模式（电机无力输出）
     }
     else if (RC.competition)
     {
-        chassis_mode = CHASSIS_INFANTRY_FOLLOW_GIMBAL_YAW;
+        chassis_mode = CHASSIS_INFANTRY_FOLLOW_GIMBAL_YAW; // 步兵跟随云台偏航模式（正常操控）
     }
     else if(RC.check_in_pos)
     {
-        chassis_mode = CHASSIS_CHECK_IN;
+        chassis_mode = CHASSIS_CHECK_IN;                   // 入场检测模式
     }
 
-    // set chassis target status based on chassis mod and calculate control variables
+    // --- 3. 根据底盘模式设置目标状态并计算控制量 --- 
     if (chassis_mode == CHASSIS_ZERO_FORCE)
     {
-        // �趨�ٶ�
         Target_Velocity = 0.0f;
         Target_X = 0.0f;
-        // �趨ת��
         Target_Omega = 0.0f;
-        // �趨�����?
         Target_Roll = 0.0f;
-        // �趨theta_err
         Target_Theta = 0.0f;
         Target_height = 0.1;
 
+        // 初始化标志位清零
         init_pos = false;
 
-        FSM_Jump.Set_Status(STOP);
-        Chassis.Set_above_flag_l(0);
-        Chassis.Set_above_flag_r(0);
+        FSM_Jump.Set_Status(STOP);  // 重置跳跃状态机
         
+        Chassis.Set_above_flag_l(0); // 清空离地标志位
+        Chassis.Set_above_flag_r(0); // 清空离地标志位
 
-        Chassis.Set_Target_left_f0(0);
-        Chassis.Set_Target_right_f0(0);
+        Chassis.Set_Target_left_f0(0);  // 目标腿力清零
+        Chassis.Set_Target_right_f0(0); // 目标腿力清零
 
+        // 下发所有目标值到Chassis对象
         Chassis.Set_Target_X(Target_X);
         Chassis.Set_Target_Velocity(Target_Velocity);
         Chassis.Set_Target_Omega(Target_Omega);
         Chassis.Set_Target_Roll(Target_Roll);
         Chassis.Set_Target_Theta(Target_Theta);
-        PID_Fallow_yaw.Set_Integral_Error(0.0);
-
+        PID_Follow_yaw.Set_Integral_Error(0.0);
         Chassis.Zero_Force_Control();
-
     }
     else if (chassis_mode == CHASSIS_INFANTRY_FOLLOW_GIMBAL_YAW)
     {
-        if ((FSM_Chassis.Get_Now_Status_Serial() == NORMAL || FSM_Chassis.Get_Now_Status_Serial() == ABOVE_GROUND)
-        && FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
+        // -- 正常站立或离地，且不在上楼梯屈腿状态 --
+        if ((FSM_Chassis.Get_Now_Status_Serial() == NORMAL || FSM_Chassis.Get_Now_Status_Serial() == ABOVE_GROUND)&& FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
         {
             float vx_channel = 0, vy_channel = 0, vz_channel = 0, Roll_channel = 0, vel = 0;
+            // sin: 相对角度正弦; cos: 跟随偏航与相对角度差的余弦
             float sin, cos = 0;
+            // reletive_angle: 云台相对偏航角; tmp_follow_angle: 临时跟随角度
             float reletive_angle, tmp_follow_angle = 0;
+
+        //原地180度掉头，目前被注释
         if (yaw_rotate_active)
-    {
-        float current_yaw = mc02_SerialPort.Rx_Data.motor_yaw_angle;
-        float yaw_error = target_yaw_abs - current_yaw;
-        // �Ƕ�����һ���� [-��, ��]
-        if (yaw_error > M_PI) yaw_error -= 2.0f * M_PI;
-        if (yaw_error < -M_PI) yaw_error += 2.0f * M_PI;
-
-        PID_Fallow_yaw.Set_Target(target_yaw_abs);
-        PID_Fallow_yaw.Set_Now(current_yaw);
-        PID_Fallow_yaw.TIM_Calculate_PeriodElapsedCallback();
-        float omega_output = PID_Fallow_yaw.Get_Out();
-
-        if (fabs(yaw_error) < 0.2f)
         {
-            yaw_rotate_active = false;
-        }
+            float current_yaw = mc02_SerialPort.Rx_Data.motor_yaw_angle;    // 获取当前云台偏航角
+            float yaw_error = target_yaw_abs - current_yaw; // 计算偏航误差
+            if (yaw_error > M_PI) yaw_error -= 2.0f * M_PI; // 角度归一化到 [-π, π]
+            if (yaw_error < -M_PI) yaw_error += 2.0f * M_PI;
 
-        // ��ת�ڼ���ͣ�������ƣ�ֻ���к������
-        Target_Velocity = 0.0f;
-        Target_Velocity_Y = 0.0f;
-        Target_Omega = omega_output;
-        Target_Roll = 0.0f;
-        Target_Pitch = 0.0f;
-        Target_Theta = 0.0f;
-        // �߶ȱ��ֵ�ǰֵ��̶�ֵ
-        // Target_height ���ֲ���
-    }
-    else{
-            
-            vx_channel = RC.axis[0];
-            vy_channel = RC.axis[1];
-            vz_channel = RC.axis[2];
-            Roll_channel = RC.axis[3];
+            // PID计算偏航角速度输出
+            PID_Follow_yaw.Set_Target(target_yaw_abs);
+            PID_Follow_yaw.Set_Now(current_yaw);
+            PID_Follow_yaw.TIM_Calculate_PeriodElapsedCallback();
+            float omega_output = PID_Follow_yaw.Get_Out();
+
+            // 当偏航误差小于0.2弧度时，结束掉头
+            if (fabs(yaw_error) < 0.2f) {yaw_rotate_active = false;}
+
+            // 旋转期间停止平移速度控制，只进行掉头
+            Target_Velocity = 0.0f;
+            Target_Velocity_Y = 0.0f;
+            Target_Omega = omega_output;
+            Target_Roll = 0.0f;
+            Target_Pitch = 0.0f;
+            Target_Theta = 0.0f;
+            // 高度保持不变（不更新Target_height）
+        }
+        else
+        {
+            // ---- 正常遥控控制模式 ----
+            // 读取遥控器各通道值
+            vx_channel = RC.axis[0];      // 前后方向
+            vy_channel = RC.axis[1];      // 左右方向
+            vz_channel = RC.axis[2];      // 高度方向
+            Roll_channel = RC.axis[3];    // 横滚
             reletive_angle = mc02_SerialPort.Rx_Data.motor_yaw_angle ;
             sin = sinf(reletive_angle);
             cos = cosf(follow_yaw_angle - reletive_angle);
 
+            // 跳跃空中阶段超时保护：若起跳后长时间未落地，强制退出跳跃状态
             if(FSM_Jump.Get_Now_Status_Serial() == STRETCH_LEG_AIR)
             {
                 mod++;
@@ -487,14 +497,15 @@ void Robot::Chassis_Control()
                 FSM_Jump.Set_Status(STOP);
             }
 
-            //�������ƣ���Ϊң�������ܴ��ڲ��� ҡ�����м䣬��ֵ��Ϊ0
+            // 遥控器摇杆死区滤波：当摇杆值小于死区阈值时，置零
+            // 避免摇杆中位抖动导致误动作
             vx_channel = fabs(vx_channel) > DR16_Rocker_Dead_Zone ? vx_channel : 0.0f;
             vy_channel = fabs(vy_channel) > DR16_Rocker_Dead_Zone ? vy_channel : 0.0f;
             vz_channel = fabs(vz_channel) > DR16_Rocker_Dead_Zone ? vz_channel : 0.0f;
             Roll_channel = fabs(Roll_channel) > DR16_Rocker_Dead_Zone ? Roll_channel : 0.0f;
 
-
-            // �趨�ٶ�
+            // 将遥控器通道值映射为实际目标速度
+            // 非小陀螺模式：正常速度映射
             if (!RC.spin)
             {
                 Target_Velocity = (vx_channel + 0.0f) * MAX_Velocity;
@@ -502,23 +513,30 @@ void Robot::Chassis_Control()
             }
             else
             {
+                // 小陀螺模式：取消平移速度指令，仅靠倾斜产生位移
                 Target_Velocity = (0) * MAX_Velocity;
                 Target_Velocity_Y = 0 * MAX_Velocity_Y;
             }
+            // 根据跟随偏航角与当前相对角度的差值，余弦衰减X方向速度
+            // cos^3 使得小角度偏差时速度损失较小，大角度偏差时(如90°)速度接近0
             Target_Velocity = pow(cos, 3) * Target_Velocity;
 
+            // 使用斜坡函数对X方向速度进行平滑，防止速度突变
             Slope_X.Set_Target(Target_Velocity);
             Slope_X.Set_Now_Real(pow(cos, 3) * Chassis.Get_Velocity_filter());
             Slope_X.TIM_Calculate_PeriodElapsedCallback();
             Target_Velocity = Slope_X.Get_Out();
             
+            // Y方向速度同样使用余弦衰减和斜坡平滑
             Target_Velocity_Y = pow(cos, 3) * Target_Velocity_Y;
             Slope_Y.Set_Target(Target_Velocity_Y);
             Slope_Y.Set_Now_Real(pow(cos - M_PI / 2, 3) * Chassis.Get_Velocity_filter());
             Slope_Y.TIM_Calculate_PeriodElapsedCallback();
             Target_Velocity_Y = Slope_Y.Get_Out();
 
+            // 计算合速度大小
             vel = sqrt(Target_Velocity * Target_Velocity + Target_Velocity_Y * Target_Velocity_Y);
+            // 当按下A/D键时：底盘跟随速度方向旋转（底盘朝向运动方向）
             if(RC.press_a == 1 || RC.press_d == 1)
             {
                 tmp_follow_angle = Get_target_angle(Target_Velocity, Target_Velocity_Y, mc02_SerialPort.Rx_Data.motor_yaw_angle, &vel);
@@ -526,32 +544,39 @@ void Robot::Chassis_Control()
             }
             else
             {
+                // 无A/D键按下时：不跟踪速度方向，保持当前跟随偏移角
                 Get_target_angle(Target_Velocity, Target_Velocity_Y, mc02_SerialPort.Rx_Data.motor_yaw_angle, &vel);
                 follow_yaw_angle = follow_yaw_offset;
             }
+            // 重新计算cos用于后续速度衰减
             cos = cosf(follow_yaw_angle - reletive_angle);
+            // 倒车时速度减半，限制倒车最大速度
             if(vel < 0)
             {
                 vel = 0.5 * vel;
             }
         }
 
+            // ---- 小陀螺模式：底盘自旋，通过倾斜控制移动方向 ----
             if(RC.spin)
             {
-                //  世界坐标�? tilt 指令 �? 机体 pitch/roll（旋�?矩阵�?
+                // 世界坐标系下的tilt指令转换为机体坐标系下的pitch/roll（旋转矩阵变换）
                 float vx_ch = fabs(vx_channel) > DR16_Rocker_Dead_Zone ? vx_channel : 0.0f;
                 float vy_ch = fabs(vy_channel) > DR16_Rocker_Dead_Zone ? vy_channel : 0.0f;
                 float vx_tilt = vx_ch * RC_to_Chassis_Spin_Pitch_Gain;
                 float vy_tilt = vy_ch * RC_to_Chassis_Spin_Pitch_Gain;
                 bool mod = 0;
 
+                // 云台角度 + 偏置 → 用于tilt在世界坐标与机体坐标间的转换
                 float gimbal_angle = mc02_SerialPort.Rx_Data.motor_yaw_angle + Spin_Pitch_Angle_Offset;
                 Target_Pitch =  vx_tilt * cosf(gimbal_angle) + vy_tilt * sinf(gimbal_angle);
                 Target_Roll  = -vx_tilt * sinf(gimbal_angle) + vy_tilt * cosf(gimbal_angle);
 
+                // 限制pitch/roll在±0.20弧度内，防止过大倾斜
                 Float_Math_Constrain(&Target_Pitch, -0.20f, 0.20f);
                 Float_Math_Constrain(&Target_Roll,  -0.20f, 0.20f);
 
+                // 小陀螺模式下平移速度为零，恒速自旋
                 Target_Velocity = 0.0f;
                 Target_Omega = (fabs(vx_ch) > 0.01f || fabs(vy_ch) > 0.01f) ? -7.0f : -7.0f;
 
@@ -560,45 +585,50 @@ void Robot::Chassis_Control()
             }
             else
             {
+                // 非小陀螺模式：pitch归零，roll由遥控器控制
                 Target_Pitch = 0.0f;
                 Target_Roll = Roll_channel * RC_to_Chassis_Roll_Gain;
                 Chassis.Set_Target_Pitch(Target_Pitch);
                 Chassis.Set_Spin_Mode(false);
 
                 #if FUS_I6X
-                Target_Omega = -PID_Fallow_yaw.Get_Out();
+                // 富斯I6X遥控器：偏航角速度由PID计算
+                Target_Omega = -PID_Follow_yaw.Get_Out();
                 #endif
 
                 #if GAMEPAD
+                // 游戏手柄：偏航角速度直接由摇杆映射
                  Target_Omega = vy_channel * RC_to_Chassis_Yaw_Gain;
                 #endif
 
-                PID_Fallow_yaw.Set_Target(follow_yaw_angle);
-                PID_Fallow_yaw.Set_Now(mc02_SerialPort.Rx_Data.motor_yaw_angle);
-                PID_Fallow_yaw.TIM_Calculate_PeriodElapsedCallback();
-                Target_Omega = -PID_Fallow_yaw.Get_Out();
+                // 偏航PID跟随计算
+                PID_Follow_yaw.Set_Target(follow_yaw_angle);
+                PID_Follow_yaw.Set_Now(mc02_SerialPort.Rx_Data.motor_yaw_angle);
+                PID_Follow_yaw.TIM_Calculate_PeriodElapsedCallback();
+                Target_Omega = -PID_Follow_yaw.Get_Out();
 
             }
             
-            
-            
-
-            // �趨�����߶�
+            // 目标高度由遥控器上下通道积分控制，并限幅
             Target_height += vz_channel * RC_to_Chassis_Leg_Gain;
             Target_dheight = 0.0;
             Float_Math_Constrain(&Target_height, 0.13f, 0.34f);
 
+            // 偏航角速度通过斜坡函数平滑处理，防止突变
             Slope_Omega.Set_Target(Target_Omega);
             Slope_Omega.Set_Now_Real(INS.gyro[2]);
             Slope_Omega.TIM_Calculate_PeriodElapsedCallback();
             Target_Omega = Slope_Omega.Get_Out();
 
+            // 下发底盘位置目标
             Chassis.Set_Target_X(Target_X);
             #if FUS_I6X
+            // 富斯I6X：目标速度经过cos^3衰减（考虑跟随偏航角差异）
             Chassis.Set_Target_Velocity(vel * cos * cos* cos);
             #endif
 
             #if GAMEPAD
+            // 游戏手柄：目标速度通过斜坡平滑
             Target_Velocity = (vx_channel + 0.0f) * MAX_Velocity;
             Slope_X.Set_Target(Target_Velocity);
             Slope_X.Set_Now_Real(Chassis.Get_Velocity_filter());
@@ -606,6 +636,7 @@ void Robot::Chassis_Control()
             Target_Velocity = Slope_X.Get_Out();
             #endif
 
+            // 将所有目标值下发给Chassis底层控制对象
             Chassis.Set_Target_Velocity(Target_Velocity);
             Chassis.Set_Target_height(Target_height);
             Chassis.Set_Target_dheight(Target_dheight);
@@ -614,38 +645,43 @@ void Robot::Chassis_Control()
             Chassis.Set_Target_Roll(Target_Roll);
             Chassis.Set_Target_Theta(Target_Theta);
             Chassis.Set_Target_Yaw(follow_yaw_angle);
+            // 执行跟随云台控制
             Chassis.Follow_Gimbal_Control();
-            // Chassis.Chassis_Power_Control();
         }
+        // -- 子状态：OVER_TURN（侧翻状态），且不在上楼梯屈腿状态 --
         else if(FSM_Chassis.Get_Now_Status_Serial() == OVER_TURN &&
                 FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
         {
+            // 执行侧翻恢复程序
             Check_over_turn_mod();
         }
+        // -- 子状态：OVER_TURN_UPSIDE1/2（完全翻倒/仰面朝天状态） --
         else if((FSM_Chassis.Get_Now_Status_Serial() == OVER_TURN_UPSIDE1 ||
                 FSM_Chassis.Get_Now_Status_Serial() == OVER_TURN_UPSIDE2)&&
                 FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
         {
+            // 执行自救恢复程序
             Self_Rescue();
         }
-        else if (FSM_Chassis.Get_Now_Status_Serial() == OVER_TURNING1
-        && FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
+        // -- 子状态：OVER_TURNING1（正在翻倒过程中），且不在上楼梯屈腿状态 --
+        else if (FSM_Chassis.Get_Now_Status_Serial() == OVER_TURNING1 && FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
         {
             float tmp_tar_l, tmp_tar_r = 0.0f;
-
-            // �趨�ٶ�
+            // 目标速度与位移清零
             Target_Velocity = 0.0f;
             Target_X = 0.0f;
-            // �趨ת��
+            // 目标角速度清零
             Target_Omega = 0.0f;
-            // �趨�����?
+            // 目标横滚角清零
             Target_Roll = 0.0f;
-            // �趨theta_err
+            // 目标腿角度误差清零
             Target_Theta = 0.0f;
+            // 翻倒恢复时使用较低高度
             Target_height = 0.13f;
             Target_dheight = 0.0;
             Float_Math_Constrain(&Target_height, 0.12f, 0.31f);
 
+            // 跳跃空中状态超时保护
             if(FSM_Jump.Get_Now_Status_Serial() == STRETCH_LEG_AIR)
             {
                 mod++;
@@ -659,6 +695,7 @@ void Robot::Chassis_Control()
                 FSM_Jump.Set_Status(STOP);
             }
 
+            // 下发目标值并执行腿部控制
             Chassis.Set_Target_X(Target_X);
             Chassis.Set_Target_Velocity(Target_Velocity);
             Chassis.Set_Target_height(Target_height);
@@ -668,50 +705,53 @@ void Robot::Chassis_Control()
             Chassis.Set_Target_Theta(Target_Theta);
             Chassis.Control_leg();
         }
+        // -- 子状态：UP_STARIS_BEND_LEG（上楼梯屈腿状态） --
         else if(FSM_Up_staris.Get_Now_Status_Serial() == UP_STARIS_BEND_LEG)
         {
+            // 执行上楼梯控制（腿部弯曲以降低重心）
             Chassis.UP_Staris_Control_leg();
         }
 
     }
+    // ===== 3.3 入场检测模式 =====
     else if(chassis_mode == CHASSIS_CHECK_IN)
     {
+        // 遥控器通道变量声明
         float vx_channel = 0, vy_channel = 0, vz_channel = 0, Roll_channel = 0;
-            vx_channel = RC.axis[0];
-            vy_channel = RC.axis[1];
-            vz_channel = -RC.axis[2];
-            Roll_channel = RC.axis[3];
+            vx_channel = RC.axis[0];       // 前后方向
+            vy_channel = RC.axis[1];       // 左右方向
+            vz_channel = -RC.axis[2];      // 高度方向（取反，入场模式下遥控器上下通道逻辑翻转）
+            Roll_channel = RC.axis[3];     // 横滚
 
-        
-            //�������ƣ���Ϊң�������ܴ��ڲ��� ҡ�����м䣬��ֵ��Ϊ0
+            // 遥控器摇杆死区滤波
             vx_channel = fabs(vx_channel) > DR16_Rocker_Dead_Zone ? vx_channel : 0.0f;
             vy_channel = fabs(vy_channel) > DR16_Rocker_Dead_Zone ? vy_channel : 0.0f;
             vz_channel = fabs(vz_channel) > DR16_Rocker_Dead_Zone ? vz_channel : 0.0f;
             Roll_channel = fabs(Roll_channel) > DR16_Rocker_Dead_Zone ? Roll_channel : 0.0f;
 
-            // �趨�ٶ�
+            // 目标速度 = 前后通道 × 最大速度
             Target_Velocity = vx_channel * MAX_Velocity;
-        
 
             if(RC.spin)
             {
+                // 小陀螺自旋
                 Target_Omega = 7.0;
             }
             else
             {
-                Target_Omega = -PID_Fallow_yaw.Get_Out();
-                //  Target_Omega = vy_channel * RC_to_Chassis_Yaw_Gain;
+                Target_Omega = -PID_Follow_yaw.Get_Out();
             }
 
-            // �趨�����?
+            // 目标横滚角
             Target_Roll = Roll_channel * RC_to_Chassis_Roll_Gain;
-            // �趨theta_err
+            // 目标腿角度误差清零
             Target_Theta = 0.0f;
-            // �趨�����߶�
+            // 目标高度积分控制（入场模式允许更大高度范围）
             Target_height += vz_channel * RC_to_Chassis_Leg_Gain;
             Target_dheight = 0.0;
             Float_Math_Constrain(&Target_height, 0.1f, 0.38f);
 
+            // 下发所有目标值到Chassis
             Chassis.Set_Target_X(Target_X);
             Chassis.Set_Target_Velocity(Target_Velocity);
             Chassis.Set_Target_height(Target_height);
@@ -720,9 +760,11 @@ void Robot::Chassis_Control()
             Chassis.Set_Target_Roll(Target_Roll);
             Chassis.Set_Target_Theta(Target_Theta);
 
+            // 执行入场检测控制
             Chassis.Check_in_Control();
     }
 
+    // --- 4. 发送遥控器数据更新包 ---
     Remote_update();
 }
 
@@ -1145,6 +1187,3 @@ void Robot::UP_staris_Control()
     //     }
     // }
 }
-
-
-

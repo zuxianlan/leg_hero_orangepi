@@ -78,67 +78,9 @@ void class_Chassis::Init()
     PID_tp_omega.Init(1.5f, 0.0f, 0.0f, 0.00f, 0.0f, 10.0f, 0.002f, 0.0f, 0.0f, 0.0f, 0.0f, PID_D_First_ENABLE);
 
     /******************* kf *******************/
-    // kf.x_hat << 0.0, 0.0;
-    // kf.StateMinVariance << 0.03, 0.03;
-    // kf.P << 1.0, 0.0,
-    //         0.0, 1.0;
-    // kf.F << 1.0, 0.001,
-    //         0.0, 1.0;
-    // kf.H << 1.0, 0.0,
-    //         0.0, 1.0;
-    // kf.Q << 1, 0.0,
-    //         0.0, 1;
-    // kf.R << 100.0, 0.0,
-    //         0.0, 100.0;
-
-    // kf.x_hat << 0.0, 0.0;
-    // // ★★ 关键：原为 {0.03, 0.03}，会让 P(0,0) 永远收不紧，
-    // //    导致"打滑时 P 被压到底"这个机制失效 → 速度状态持续抖动
-    // kf.StateMinVariance << 0.0001f, 0.0300f;
-
-    // kf.P << 1.0, 0.0,
-    //         0.0, 1.0;
-    // kf.F << 1.0, 0.001,      // ← dt = 1ms，与 TIM_1ms 回调一致（勿改！）
-    //         0.0, 1.0;
-    // kf.H << 1.0, 0.0,        // 直测 [v, a]，H 为单位阵
-    //         0.0, 1.0;
-    // kf.Q <<   1.0f,    0.0f, // 与 Self_Observe 正常态一致
-    //           0.0f, 2000.0f;
-    // kf.R << 100.0f,    0.0f,
-    //           0.0f,    1.0f;
     kf.KF_Init();
-
     /******************* mpc *******************/
     MPC_body.MPC_Init();
-    // MPC_body.u_min << -150, -150;
-    // MPC_body.u_max << 150, 150;
-    // MPC_body.x_min << -M_PI / 4.0f, -0.5, 0.1, -1.0;
-    // MPC_body.x_max << M_PI / 4.0f, 0.5, 0.38, 1.0;
-    // MPC_body.Q << 1.5e7,0,0,0,
-    //               0,1e3,0,0,
-    //               0,0,1.5e7,0,
-    //               0,0,0,1e3;
-
-    // MPC_body.F << 1.5e8,0,0,0,
-    //               0,1e4,0,0,
-    //               0,0,1.5e8,0,
-    //               0,0,0,1e4;
-
-    // MPC_body.R << 0.9,0,
-    //               0,0.9;            
-
-    // MPC_body.A << 1,dt_mpc,0,0,
-    //               0,1,0,0,
-    //               0,0,1,dt_mpc,
-    //               0,0,0,1-(dt_mpc*b/m);
-
-    // MPC_body.B << 0,0,
-    //               -(r*dt_mpc/I_r), r*dt_mpc/I_r,
-    //               0,0,
-    //               dt_mpc/m, dt_mpc/m;
-
-    // MPC_body.BuildPredictionMatrices();
-    // MPC_body.BuildHessianMatrices();
 
 }
 
@@ -166,8 +108,6 @@ void class_Chassis::feedback_update()
 
     theta_err = left_leg.Get_theta() - right_leg.Get_theta();
     dtheta_err = left_leg.Get_dtheta() - right_leg.Get_dtheta();
-    // pitch_l = -(INS->pitch - Target_Pitch);
-    // d_pitch_l = -INS->gyro[0];
     // ========== 当前身体高度与高度变化率（考虑roll角补偿） ==========
     Now_height = (left_leg.Get_L0() * cosf(INS->roll) + right_leg.Get_L0() * cosf(INS->roll)) / 2;
     Now_dheight = (left_leg.Get_dL0() * cosf(INS->roll) + right_leg.Get_dL0() * cosf(INS->roll)) / 2;
@@ -196,14 +136,13 @@ void class_Chassis::Zero_Force_Control()
     left_leg.VMC_Calc_1();
     left_leg.VMC_Calc_2();
     T_L = 0;
-    //T_L_limit = 0;
     Tp_L = 0;
+
     right_leg.Set_Tp(0);
     right_leg.Set_F0(0);
     right_leg.VMC_Calc_1();
     right_leg.VMC_Calc_2();
     T_R = 0;
-    //T_R_limit = 0;
     Tp_R = 0;
 
     X_filter = 0;
@@ -221,89 +160,74 @@ void class_Chassis::Follow_Gimbal_Control()
     PID_tp_omega.Set_Now(dtheta_err);
     PID_tp_omega.TIM_Calculate_PeriodElapsedCallback();
 
+    // ===== MPC身体姿态计算 =====
     MPC_Body_Calc();
 
+    // ===== 根据底盘状态机模式设置控制参数 =====
     if (chassis_fsm_mode == ABOVE_GROUND)
     {
-        
+        // 腾空状态：关闭摩擦补偿，清零角速度PID输出
         Target_Theta = 0.0;
         M = 180.0;
         F_mc = 0.0;
-    
         PID_Omega.Set_Out(0.0);
     }
     else
     {
+        // 着地状态：根据滤波速度与陀螺仪Z轴角速度计算摩擦补偿力
         Target_Theta = 0.0;
         M = 180.0;
         F_mc = Velocity_filter * INS->gyro[2] * 28.0f;
     }
     
     Float_Math_Constrain(&F_mc, 0, 100.0f);
+    // 根据左右腿当前长度计算虚拟弹簧力（腿越长弹簧力越大）
     spring_forcel = 100 - 10*(1 - (left_leg.Get_L0()-0.1)/0.28);
     spring_forcer = 100 - 10*(1 - (right_leg.Get_L0()-0.1)/0.28);
 
-    // ������ֵ
-    const float STOP_CMD_THRESH = 0.05f;   // Ŀ���ٶ���ֵ
-    const float STOP_ACT_THRESH = 0.5f;   // ʵ���ٶ���ֵ
-    const float MOVE_CMD_THRESH = 0.01f;    // �˶������ֵ���ͻأ�
-
-    // ֹͣ��־λ�߼���ͬʱ�������ָ��͵���ʵ���ٶȲ���Ϊ��ȫֹͣ
-    if (fabs(Target_Velocity) < STOP_CMD_THRESH && fabs(Velocity_filter) < STOP_ACT_THRESH) {
-        stop_flag = true;
-    } else if (fabs(Target_Velocity) > MOVE_CMD_THRESH) {
-        stop_flag = false;
-    }
+    // 同时满足目标速度和实际速度均很小时，进入停止状态
+    if (fabs(Target_Velocity) < 0.05f && //目标速度小于此阈值
+        fabs(Velocity_filter) < 0.5f)    //返回转速小于此阈值
+        {stop_flag = true;} 
+    else if (fabs(Target_Velocity) > 0.01f) //目标速度大于此阈值
+        {stop_flag = false;}
     
-
-    // ���� Target_X
+    // ===== 根据停止标志设置LQR目标状态 =====
     if (stop_flag) {
-    // ����Ǹս���ֹͣ״̬����Ŀ��λ�ø���Ϊ��ǰλ�ã����⵹��
     if (!last_stop_flag) {
+        // 刚进入停止状态：清零滤波器与目标位置，记录当前位置
         X_filter = 0.0;
         Target_X = X_filter;
         last_Target_X = X_filter;
     } else {
-        Target_X = last_Target_X;  // ����
+        // 持续停止状态：保持目标位置不变，施加小角度使机器人微微前倾以维持稳定
+        Target_X = last_Target_X; 
         Target_Theta = 0.04;
         
     }
     } else {
-    // �˶�״̬����������
+    // 运动状态：清零所有滤波和目标值
     X_filter = 0.0;
     Target_Theta = 0.0;
     Target_X = X_filter;
-    last_Target_X = X_filter;      // �������£��Ա�ֹͣʱʹ��
+    last_Target_X = X_filter;  
     }
-
-    
-
     LQR_Calc();
 
+    // ===== 左腿控制量计算 =====
     T_L = T[0];
-
-    left_leg.Set_Tp(T[2]- PID_tp_omega.Get_Out());
-    //left_leg.Set_Tp(PID_tp_omega.Get_Out());
-
+    left_leg.Set_Tp(T[2]- PID_tp_omega.Get_Out()); 
     left_leg.Set_F0(MPC_body.u_out(0) - spring_forcel + M / cosf(left_leg.Get_theta()) + Jump_force - F_mc + 5.0f);
-    //left_leg.Set_F0(MPC_body.u_out(0));
-    // left_leg.Set_F0(6);
-
     left_leg.VMC_Calc_2();
 
+    // ===== 右腿控制量计算 =====
     T_R = T[1];
-    
-    right_leg.Set_Tp(T[3]+ PID_tp_omega.Get_Out());
-    //right_leg.Set_Tp(PID_tp_omega.Get_Out());
-
+    right_leg.Set_Tp(T[3]+ PID_tp_omega.Get_Out());  
     right_leg.Set_F0(-MPC_body.u_out(1) + spring_forcer - M / cosf(right_leg.Get_theta()) - Jump_force - F_mc - 0.0f);
-    //right_leg.Set_F0(-MPC_body.u_out(1));
-
     right_leg.VMC_Calc_2();
     
     last_Target_X = Target_X;
     last_stop_flag = stop_flag;
-
 }
 
 void class_Chassis::Check_in_Control()
@@ -312,33 +236,38 @@ void class_Chassis::Check_in_Control()
 
     static int mod = 0;
     // mod++;
+
+    // 左轮扭矩 = 目标速度反向（速度控制模式，无髋关节参与）
     T_L = -Target_Velocity;
-    left_leg.Set_Tp(0);
+    left_leg.Set_Tp(0);  // 髋关节扭矩清零，纯轮式运动
+
+    // 左腿超伸软限位保护：当腿长超过0.34m(最大行程)时，施加向下的虚拟力拉回
+    // ll = (L0/0.34)^2 - 1，仅在 L0 > 0.34 时为正
     ll = 0 - (1 - pow(left_leg.Get_L0()/0.34, 2));
     if(ll < 0)
     {
         ll = 0;
     }
-    left_leg.Set_F0(-ll);
+    left_leg.Set_F0(-ll);  // 负力向下，防止腿过度伸展
     left_leg.VMC_Calc_2();
 
-  
-    // T_R = 0;
-    // right_leg.Set_Tp(0);
-
-    // T_R =  + T_R_Speed + T_R_YAW;
+    // 右轮扭矩 = 目标速度反向
     T_R =  -Target_Velocity;
     // T_R =  + 0;
     
-    right_leg.Set_Tp(0);
+    right_leg.Set_Tp(0);  // 髋关节扭矩清零
+
+    // 右腿超伸软限位保护：线性计算，当腿长超过0.34m时施加向下的力
+    // rr = L0/0.34 - 1，仅在 L0 > 0.34 时为正
     rr = 0 - (1 - right_leg.Get_L0()/0.34);
     if(rr < 0)
     {
         rr = 0;
     }
-    right_leg.Set_F0(rr);
+    right_leg.Set_F0(rr);  // 正力向下，防止腿过度伸展
     right_leg.VMC_Calc_2();
 
+    // 清零速度滤波器（入场模式下不累积速度估计）
     X_filter = 0;
 
 }
@@ -363,14 +292,12 @@ void class_Chassis::Control_leg()
     T_R = 0;
     X_filter = 0;
 
-    // ���Ŀ��߶��Ƿ����仯�������?�ˣ����´���һ�ι켣�滮
     if (fabs(Target_height - last_Target_height) > 0.001f) 
     {
         height_planner.MoveTo(Now_height, Target_height, Now_dheight, Target_dheight, 2.5f); // 0.5����ɶ���?
         last_Target_height = Target_height;
     }
 
-    // ���µ�ǰ��ƽ���ο���
     if (height_planner.is_planning) 
     {
         height_planner.Step(dt, current_ref_height, current_ref_dheight);
@@ -393,20 +320,17 @@ void class_Chassis::Control_leg()
         MPC_body.x_ref(i*4+3) = current_ref_dheight;
     }
     MPC_body.MPC_Calculate();
-    left_leg.Set_Tp(4.0 - PID_tp_omega.Get_Out());
-    T_L = 0.0;
 
     spring_forcel = 130 - 10*(1 - (left_leg.Get_L0()-0.1)/0.24);
     spring_forcer = 130 - 10*(1 - (right_leg.Get_L0()-0.1)/0.24);
 
+    T_L = 0.0;
+    left_leg.Set_Tp(4.0 - PID_tp_omega.Get_Out());
     left_leg.Set_F0(MPC_body.u_out(0) / 1.5 - spring_forcel);
-    //left_leg.Set_F0(spring_forcel);
     left_leg.VMC_Calc_2();
 
-
-    right_leg.Set_Tp(4.0 + PID_tp_omega.Get_Out());
     T_R = 0.0;
-    
+    right_leg.Set_Tp(4.0 + PID_tp_omega.Get_Out());
     right_leg.Set_F0(-MPC_body.u_out(1) / 1.5 + spring_forcer);
     right_leg.VMC_Calc_2();
 
@@ -417,7 +341,6 @@ void class_Chassis::Control_leg_left(float target)
 {
     if(target != 0)
     {
-        // LQR�������?
         T_L = 0.0;
         Tp_L = (left_leg.Get_dtheta() - target) * Fitting_K[2][5];
 
@@ -438,7 +361,6 @@ void class_Chassis::Control_leg_right(float target)
 {
     if(target != 0)
     {
-        // LQR�������?
         T_R = 0.0;
         Tp_R = (right_leg.Get_dtheta() - target) * Fitting_K[3][7];
 
@@ -596,37 +518,6 @@ void class_Chassis::Self_Observe()
 
     Slip_Detection_And_Suppression();
 
-//    if (spin_mode)              // ★ 小陀螺优先：优先于打滑，语义更清晰
-//     {
-//         kf.Q <<   1.f,    0.0f,
-//                 0.0f,    1.0f;
-//         kf.R << 100.0f,    0.0f,
-//                 0.0f, 8000.0f;
-//         kf.z << average_speed,
-//                 INS->MotionAccel_b[1];
-//     }
-//     else if (slip_active)
-//     {
-//         kf.Q <<    0.1f,  0.0f,
-//                 0.0f, 4000.0f;
-//         kf.R << 9000.0f,   0.0f,
-//                 0.0f,  100.0f;
-//         kf.z << kf.x_hat(0),
-//                 INS->MotionAccel_b[1];
-//     }
-//     else
-//     {
-//         kf.Q <<   1.f,    0.0f,
-//                 0.0f, 2000.0f;
-//         kf.R << 100.0f,    0.0f,
-//                 0.0f,    1.0f;
-//         kf.z << average_speed,
-//                 INS->MotionAccel_b[1];
-//     }
-//     kf.Predict();
-//     kf.Update();
-
-//     Velocity_filter = kf.x_hat(0);
     KF_Mode mode = KF_Mode::Normal;
     if (spin_mode)        mode = KF_Mode::Spin;
     else if (slip_active) mode = KF_Mode::Slip;
