@@ -203,7 +203,7 @@ void TIM_1ms_PeriodElapsedCallback()
 }
 
 /**
- * @brief 2ms周期回调函数 用于底盘控制和状态更新
+ * @brief 1ms周期回调函数 用于底盘控制和状态更新
  * 
  */
 void TIM_2ms_PeriodElapsedCallback()
@@ -213,22 +213,15 @@ void TIM_2ms_PeriodElapsedCallback()
     {
         // 加锁保护串口接收缓冲区，防止与串口接收中断产生竞争
         std::lock_guard<std::mutex> lock(robot.mc02_SerialPort.rx_mutex);
-        // 底盘有限状态机计算
         robot.FSM_Chassis.TIM_1ms_Calculate_PeriodElapsedCallback();
-        // 跳跃控制逻辑
         robot.Jump_Control();
-        // 上楼梯控制逻辑
         robot.UP_staris_Control();
-        // 底盘状态反馈更新
         robot.Chassis.feedback_update();
-        // 底盘运动控制
         robot.Chassis_Control();
-        // 非跳跃状态下进行地面检测
         if(robot.Get_jump_flag() == 0)
         {
             robot.Chassis.Ground_Detection();
         }
-        // 启动Vofa数据可视化发送
         Vofa_start();
     }
     // 发送MC02串口数据
