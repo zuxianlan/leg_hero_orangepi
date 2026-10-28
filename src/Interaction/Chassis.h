@@ -91,19 +91,12 @@ public:
     bool mpc_enable = true;      // ★ 调试开关：false = 完全退回原 LQR
     float mpc_timeout = 0.008f;  // 输出新鲜度上限 [s]：超过 8 ms（2 个 MPC 周期）未更新就退回 LQR
 
-    // Class_LESO LESO_left = Class_LESO(6, 2, 6, 2, 0.002f);  
-    // Class_LESO LESO_right = Class_LESO(6, 2, 6, 2, 0.002f);  
-
     Enum_chassis_fsm_mode chassis_fsm_mode;
     Enum_up_staris_fsm_mode chassis_up_fsm_mode;
 
-    //float k1 = 1, k2 = 1;
-    //int above_zero_force = 1;
 
     float current_ref_height = 0;
     float current_ref_dheight = 0;
-
-    //float LESO_dhat[4];
 
     void Init();
     void feedback_update();
@@ -158,14 +151,7 @@ public:
     inline float Get_a_filter()                                        { return kf.x_hat(1); } 
 
     /**
-     * @brief MPC 输出是否仍可用：求解成功 **且** 距今不超过 mpc_timeout
-     *
-     * 为什么需要：T_mpc / mpc_ok 只由 4 ms 线程更新。若该线程卡住（重建变慢、
-     * 被高优先级任务挤占、甚至线程退出），1 ms 侧会一直复用几十毫秒前的旧解，
-     * 而且全程没有任何告警。这里用时间戳把「最后一次有效求解」限制在 8 ms 内。
-     *
-     * 写端 MPC_Robot_Calc() 与读端 Follow_Gimbal_Control() 都持 rx_mutex，
-     * 所以 mpc_ok / mpc_stamp 不需要 std::atomic。
+     * @brief MPC 输出是否仍可用：求解成功 **且** 距今不超过 mpc_timeout。
      */
     inline bool MPC_Output_Fresh() const
     {
@@ -177,7 +163,8 @@ public:
 
     float ll,rr = 0;
     float lqr_term[10] = {};
-
+    float T_lqr[4] = {};          // LQR 本拍四通道结果（已含打滑缩放），仅调试用
+    inline float Get_T_mpc(int i) const { return T_mpc[i]; }  
 
 private:
     KalmanFilter kf = KalmanFilter(2,2,0,nullptr,nullptr,nullptr,nullptr,nullptr);

@@ -762,6 +762,9 @@ void class_Chassis::LQR_Calc()
         T[1] *= slip_factor_r;
     }
 
+    // ★ 保存 LQR 本拍结果（在打滑缩放之后），供与 MPC 对比
+    for (int i = 0; i < 4; ++i) { T_lqr[i] = T[i]; }
+
     // ===== 状态复位：打滑 → 清位置积分，防止 X_filter 继续发散 =====
     if (slip_active)
     {

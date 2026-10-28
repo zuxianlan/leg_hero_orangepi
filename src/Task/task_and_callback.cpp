@@ -228,10 +228,10 @@ void TIM_2ms_PeriodElapsedCallback()
     mc02_send_data();
 
     // 计算并输出本轮回调耗时（微秒）
-    auto stop = std::chrono::high_resolution_clock::now();  
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();  
+    // auto stop = std::chrono::high_resolution_clock::now();  
+    // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();  
   
-    std::cout << "Elapsed time: " << duration << " us\n"; 
+    // std::cout << "Elapsed time: " << duration << " us\n"; 
 
 }
 
@@ -309,12 +309,12 @@ void Vofa_start()
     // robot.Vofa_TCP.send_message.v0 = robot.mc02_SerialPort.Rx_Data.Motor_wheel[0].omega; //left
     // robot.Vofa_TCP.send_message.v1 = robot.mc02_SerialPort.Rx_Data.Motor_wheel[1].omega; //left
 
-    robot.Vofa_TCP.send_message.v0 = robot.Chassis.left_leg.Get_torque1();  //joint_torque_set[0]
-    robot.Vofa_TCP.send_message.v1 = robot.Chassis.left_leg.Get_torque2();  //joint_torque_set[1]
-    robot.Vofa_TCP.send_message.v2 = -robot.Chassis.right_leg.Get_torque1(); //joint_torque_set[2]
-    robot.Vofa_TCP.send_message.v3 = -robot.Chassis.right_leg.Get_torque2(); //joint_torque_set[3]
-    robot.Vofa_TCP.send_message.v4 = robot.Chassis.Get_T_L();  //wheel_torque_set[0]
-    robot.Vofa_TCP.send_message.v5 = -robot.Chassis.Get_T_R(); //wheel_torque_set[1]
+    // robot.Vofa_TCP.send_message.v0 = robot.Chassis.left_leg.Get_torque1();  //joint_torque_set[0]
+    // robot.Vofa_TCP.send_message.v1 = robot.Chassis.left_leg.Get_torque2();  //joint_torque_set[1]
+    // robot.Vofa_TCP.send_message.v2 = -robot.Chassis.right_leg.Get_torque1(); //joint_torque_set[2]
+    // robot.Vofa_TCP.send_message.v3 = -robot.Chassis.right_leg.Get_torque2(); //joint_torque_set[3]
+    // robot.Vofa_TCP.send_message.v4 = robot.Chassis.Get_T_L();  //wheel_torque_set[0]
+    // robot.Vofa_TCP.send_message.v5 = -robot.Chassis.Get_T_R(); //wheel_torque_set[1]
 
     // robot.Vofa_TCP.send_message.v0 = robot.Chassis.left_leg.Get_L0();
     // robot.Vofa_TCP.send_message.v1 = robot.Chassis.right_leg.Get_L0();
@@ -347,6 +347,15 @@ void Vofa_start()
     // robot.Vofa_TCP.send_message.v7 = robot.Chassis.lqr_term[7];   // err7 * K7
     // robot.Vofa_TCP.send_message.v8 = robot.Chassis.lqr_term[8];   // err8 * K8
     // robot.Vofa_TCP.send_message.v9 = robot.Chassis.lqr_term[9];   // err9 * K9
+
+    robot.Vofa_TCP.send_message.v0 = robot.Chassis.Get_T_mpc(0);
+    robot.Vofa_TCP.send_message.v1 = robot.Chassis.Get_T_mpc(1);
+    robot.Vofa_TCP.send_message.v2 = robot.Chassis.Get_T_mpc(2);
+    robot.Vofa_TCP.send_message.v3 = robot.Chassis.Get_T_mpc(3);
+    robot.Vofa_TCP.send_message.v4 = robot.Chassis.T_lqr[0];
+    robot.Vofa_TCP.send_message.v5 = robot.Chassis.T_lqr[1];
+    robot.Vofa_TCP.send_message.v6 = robot.Chassis.T_lqr[2];
+    robot.Vofa_TCP.send_message.v7 = robot.Chassis.T_lqr[3];
     robot.Vofa_TCP.Start();
 }
 

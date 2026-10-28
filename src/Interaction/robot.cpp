@@ -1162,7 +1162,7 @@ void Robot::UP_staris_Control()
 
     if(flag == 1)
     {
-        std::cout<<FSM_Up_staris.Get_Now_Status_Serial()<<std::endl;
+        //std::cout<<FSM_Up_staris.Get_Now_Status_Serial()<<std::endl;
         FSM_Up_staris.TIM_1ms_Calculate_PeriodElapsedCallback();
         mod++;
         if(FSM_Up_staris.Get_Now_Status_Serial() == OVER)

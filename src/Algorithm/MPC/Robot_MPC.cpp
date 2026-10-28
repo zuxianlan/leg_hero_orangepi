@@ -72,10 +72,6 @@ void Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
 {
     if (!P.allFinite() || P.rows() != A.rows()) P = Q;
 
-    // 迭代次数：位置/速度这类积分方向收敛很慢（闭环极点约 0.996），
-    // 从零开始要 ~2600 次才收敛到 1e-9（冷启动 ~4.5 ms，只在上电时一次）。
-    // 腿长微调时 P 变化很小，用热启动 + 少量迭代「跟踪」即可，
-    // 否则每 2 mm 重建一次就要 2 ms，4 ms 周期扛不住。
     for (int it = 0; it < maxit; ++it) {
         const Eigen::MatrixXd BtP = B.transpose() * P;
         const Eigen::MatrixXd Kk  = (R + BtP * B).ldlt().solve(BtP * A);   // 当前增益
@@ -94,9 +90,6 @@ void Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
 
 } // namespace
 
-// ============================================================================
-// 上电初始化
-// ============================================================================
 void Robot_MPC::Init(double dt_)
 {
     dt = dt_;
@@ -134,10 +127,6 @@ void Robot_MPC::Init(double dt_)
     u_min.resize(p); u_min << -5.0, -5.0, -40.0, -40.0;   // [T_wl, T_wr, T_bl, T_br]
     u_max.resize(p); u_max <<  5.0,  5.0,  40.0,  40.0;
     // du = 每个预测步(4ms)允许的力矩变化量，即速率限制：
-    //   轮 2 Nm/步 = 500 Nm/s （0→5 Nm 用 3 步 = 12 ms）
-    //   髋 8 Nm/步 = 2000 Nm/s（0→40 Nm 用 5 步 = 20 ms，小于 15 步 = 60 ms 的预测时域）
-    // 判据：du >= 2*u_max/NP（轮 0.67、髋 5.33）。低于它 Δu 会在整个时域内卡住，
-    //       从"保护"变成"瓶颈"——大偏差时 QP 解贴死在 Δu 上，代价函数只起选方向的作用。
     du.resize(p);    du    <<   2.0,   2.0,   8.0,   8.0;   // Nm / 每步(4ms)
 
     e0.setZero();
@@ -168,46 +157,35 @@ void Robot_MPC::BuildAB(double Ll, double Lr)
     Eigen::Matrix<double, 5, 5> M  = Eigen::Matrix<double, 5, 5>::Zero();
     Eigen::Matrix<double, 5, 7> GE = Eigen::Matrix<double, 5, 7>::Zero();  // 前3列G，后4列E
 
-    // ---- M：5 行 = eqn1..eqn5，5 列 = [θ̈_wl, θ̈_wr, θ̈_ll, θ̈_lr, θ̈_b] ----
-    // eqn1：左腿绕轮轴的力矩平衡
     M(0,0) = Iw*Ll/Rw + mw*Rw*Ll + ml*Rw*lbl;
     M(0,2) = ml*lwl*lbl - Ill;
-    // eqn2：右腿，同 eqn1
     M(1,1) = Iw*Lr/Rw + mw*Rw*Lr + ml*Rw*lbr;
     M(1,3) = ml*lwr*lbr - Ilr;
-    // eqn3：整车水平方向（两轮驱动力）
     const double c3 = mw*Rw*Rw + Iw + ml*Rw*Rw + mb*Rw*Rw/2;
     M(2,0) = M(2,1) = -c3;
     M(2,2) = -(ml*Rw*lwl + mb*Rw*Ll/2);
     M(2,3) = -(ml*Rw*lwr + mb*Rw*Lr/2);
-    // eqn4：绕轮轴的俯仰方程
     const double e1 = mw*Rw*lc + Iw*lc/Rw + ml*Rw*lc;
     M(3,0) = M(3,1) = e1;
     M(3,2) = ml*lwl*lc;
     M(3,3) = ml*lwr*lc;
     M(3,4) = -Ib;
-    // eqn5：yaw 方程（左右轮差速 + 两腿摆动）
     const double g1 = Iz*Rw/(2*Rl) + Iw*Rl/Rw;
     M(4,0) = g1;  M(4,1) = -g1;
     M(4,2) = Iz*Ll/(2*Rl);
     M(4,3) = -Iz*Lr/(2*Rl);
 
-    // ---- G（5x3）：重力项，列 = [θ_ll, θ_lr, θ_b] ----
     GE(0,0) = -(ml*lwl + mb*Ll/2) * kGrav;
     GE(1,1) = -(ml*lwr + mb*Lr/2) * kGrav;
     GE(3,2) = -mb*kGrav*lc;
-
-    // ---- E（5x4）：输入项，列 = [T_wl, T_wr, T_bl, T_br] ----
     GE(0,3) = 1 + Ll/Rw;  GE(0,5) = -1;
     GE(1,4) = 1 + Lr/Rw;  GE(1,6) = -1;
     GE(2,3) = -1;         GE(2,4) = -1;
     GE(3,3) = lc/Rw;  GE(3,4) = lc/Rw;  GE(3,5) = 1;  GE(3,6) = 1;
     GE(4,3) = Rl/Rw;  GE(4,4) = -Rl/Rw;
 
-    // ---- 解一次 5x7 ----
     const Eigen::Matrix<double, 5, 7> Qq = M.partialPivLu().solve(GE);
-
-    // ---- 拼成 10x10 / 10x4 ----
+-
     Ac.setZero();
     Bc.setZero();
     Ac(0,1) = Ac(2,3) = Ac(4,5) = Ac(6,7) = Ac(8,9) = 1.0;   // 位置导数 = 速度
@@ -248,7 +226,6 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
 {
     BuildAB(Ll, Lr);                                        // ① 腿长 -> Ac,Bc
 
-    // ② 连续 -> 离散（二阶 Taylor）
     const Eigen::MatrixXd Adt = Ac * dt;
     Ad = Eigen::MatrixXd::Identity(n, n) + Adt + 0.5 * Adt * Adt;
     Bd = (Eigen::MatrixXd::Identity(n, n) * dt + 0.5 * Adt * dt) * Bc;
@@ -256,7 +233,6 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
     // ③ Riccati -> F(=P) 终端代价，同时得到兜底增益 K
     Dare(Ad, Bd, Q, R, F, K, cold ? 3000 : 40);   // 冷启动收敛 / 热启动跟踪
 
-    // ④ condensing：把未来 16 组状态用 e0 和 U 表示
     Mp.setZero();
     Cp.setZero();
     Eigen::MatrixXd Ap = Eigen::MatrixXd::Identity(n, n);
@@ -270,7 +246,6 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
         }
     }
 
-    // ⑤ 权重矩阵：前 NP 步用 Q/R，最后一步用 F
     Qb.setZero();
     Rb.setZero();
     for (int k = 0; k < NP; ++k) {
@@ -279,15 +254,11 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
     }
     Qb.block(NP*n, NP*n, n, n) = F;
 
-    // ⑥ 代价 J = U'·H·U + 2·g'·U + const
-    // CtQ = Cp'·Qb。Qb 是块对角的：前 NP 块是 Q（对角阵），最后一块是 F（满阵），
-    // 所以按块算能把 150 万次乘法降到不到 2 万次（这是重建耗时的大头）。
     CtQ = Cp.transpose();                                  // 60 x 160
     for (int k = 0; k < NP; ++k)
         for (int i = 0; i < n; ++i)
             CtQ.col(k*n + i) *= Q(i,i);
     CtQ.middleCols(NP*n, n) = Cp.middleRows(NP*n, n).transpose() * F;
-
     H = CtQ * Cp + Rb;
 
     // ⑦ Δu 约束矩阵（常数）：|u_k - u_{k-1}| <= du
@@ -299,9 +270,6 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
         if (k) { Am(r, c-p) = -1.0; Am(r+1, c-p) = 1.0; }
     }
 
-    // ⑧ 只准备数据。求解器不在这里冷启动：
-    //    SQProblem::hotstart 支持 H 变化，会复用上一周期的工作集，
-    //    比每次重建都 init（冷启动 ~60 次迭代）快一个数量级。
     BuildGradient();
     SetBounds();
 

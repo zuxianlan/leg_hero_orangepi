@@ -82,7 +82,7 @@ public:
     // SerialPort serial_port_;
 
     int Init();
-    std::mutex rx_mutex; // »¥³âËø
+    std::mutex rx_mutex; 
 private:
 };
 
