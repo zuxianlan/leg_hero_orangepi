@@ -90,12 +90,17 @@ void Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
 
 } // namespace
 
+/**
+ * @brief  上电初始化：分配全部矩阵、设置 Q/R/限幅/状态约束、建一次模型并冷启动 DARE
+ * @param  dt_  离散步长 [s]，必须等于 4 ms 任务的实际周期（当前 0.004）
+ * @return 无
+ */
 void Robot_MPC::Init(double dt_)
 {
     dt = dt_;
     const int nX = (NP + 1) * n;   // 160：未来 0..15 步的状态
     const int nU = NP * p;         // 60 ：未来 15 步的控制
-    const int nC = 2 * nU;         // 120：Δu 的上下界各一行
+    const int nC = 2 * nU + 2 * NP * NCON;   // 210：120 行 Δu + 90 行状态约束（3 状态 × 15 步 × 2）
 
     Ac = Eigen::MatrixXd::Zero(n, n);
     Bc = Eigen::MatrixXd::Zero(n, p);
@@ -124,13 +129,14 @@ void Robot_MPC::Init(double dt_)
     K = Eigen::MatrixXd::Zero(p, n);
 
     // 力矩限幅与变化率限幅（★上线前按实测峰值修改★）
-    u_min.resize(p); u_min << -5.0, -5.0, -40.0, -40.0;   // [T_wl, T_wr, T_bl, T_br]
-    u_max.resize(p); u_max <<  5.0,  5.0,  40.0,  40.0;
+    u_min.resize(p); u_min << -5.0, -5.0, -45.0, -45.0;   // [T_wl, T_wr, T_bl, T_br]
+    u_max.resize(p); u_max <<  5.0,  5.0,  45.0,  45.0;
     // du = 每个预测步(4ms)允许的力矩变化量，即速率限制：
     du.resize(p);    du    <<   2.0,   2.0,   8.0,   8.0;   // Nm / 每步(4ms)
 
     e0.setZero();
     u_last.setZero();
+    u_step = Eigen::VectorXd::Zero(p);
 
     qp = std::make_unique<qpOASES::SQProblem>(nU, nC);
     qpOASES::Options o;
@@ -140,12 +146,14 @@ void Robot_MPC::Init(double dt_)
     Rebuild(0.18, 0.18, true);               // 冷启动：把 P 迭代到收敛
 }
 
-// ============================================================================
-// 腿长 -> 连续模型 Ac、Bc
-//   原理：5 个牛顿方程写成 M·q̈ = E·u + G·θ
-//         在平衡点处 ∂q̈/∂θ = M⁻¹G，∂q̈/∂u = M⁻¹E
-//         这与 MATLAB 里 jacobian 的结果完全等价，但不需要符号推导
-// ============================================================================
+/**
+ * @brief  由左右腿长构建连续模型 Ac、Bc
+ *         原理：5 个牛顿方程写成 M·q̈ = E·u + G·θ，平衡点处 ∂q̈/∂θ = M⁻¹G、∂q̈/∂u = M⁻¹E，
+ *         与 MATLAB 里 jacobian 的结果完全等价，不需要符号推导
+ * @param  Ll  左腿长 [m]
+ * @param  Lr  右腿长 [m]
+ * @return 无
+ */
 void Robot_MPC::BuildAB(double Ll, double Lr)
 {
     double pl[3], pr[3];
@@ -219,9 +227,15 @@ void Robot_MPC::BuildAB(double Ll, double Lr)
     if (kHwTorqueFlipped) Bc = -Bc;
 }
 
-// ============================================================================
-// 重建：只在腿长变化 >2mm 或 100ms 未更新时执行（约 0.3~0.8 ms）
-// ============================================================================
+/**
+ * @brief  重建模型 + 代价矩阵：离散化 → DARE(F=P,K) → condensing → H → 约束矩阵
+ *         只在腿长变化 >2 mm 或 100 ms 未更新时执行（约 0.3~0.8 ms）
+ * @param  Ll    左腿长 [m]
+ * @param  Lr    右腿长 [m]
+ * @param  cold  true  = 冷启动 DARE（3000 次，约 5.5 ms，仅上电一次）
+ *               false = 热启动跟踪（40 次，约 75 μs）
+ * @return 无
+ */
 void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
 {
     BuildAB(Ll, Lr);                                        // ① 腿长 -> Ac,Bc
@@ -270,6 +284,9 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
         if (k) { Am(r, c-p) = -1.0; Am(r+1, c-p) = 1.0; }
     }
 
+    // ⑦b 状态约束矩阵（随 Cp 变化）：θ_ll / θ_lr / θ_b 的上下界
+    Fill_Constraint_Am();
+
     BuildGradient();
     SetBounds();
 
@@ -278,18 +295,20 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
     ready = true;
 }
 
-// ============================================================================
-// 每周期算梯度 g = CtQ · Mp · e0（参考已折算进误差态，故 Xref = 0）
-// ============================================================================
+/**
+ * @brief  每周期计算线性项 g = CtQ · Mp · e0（参考已折算进误差态，故 Xref = 0）
+ * @return 无
+ */
 void Robot_MPC::BuildGradient()
 {
     Xfree.noalias() = Mp * e0;        // 不出力时未来 16 步的状态
     g.noalias()     = CtQ * Xfree;    // 代价对 U 的斜率
 }
 
-// ============================================================================
-// 每周期更新上下限
-// ============================================================================
+/**
+ * @brief  每周期更新 QP 边界：力矩盒约束、Δu 约束、状态约束右端项
+ * @return 无
+ */
 void Robot_MPC::SetBounds()
 {
     // 力矩硬限幅
@@ -311,11 +330,62 @@ void Robot_MPC::SetBounds()
             ubA(r) = ubA(r+1) = d;
         }
     }
+
+    // 状态约束的右端项（随当前 e0 变化）
+    Fill_Constraint_Bounds();
 }
 
-// ============================================================================
-// 主流程
-// ============================================================================
+/**
+ * @brief  填充状态约束的矩阵行：每个受约束状态、每个预测步各写「上界/下界」两行
+ * @return 无
+ * @attention 行内系数取自 Cp，所以只能在 Rebuild 里调用（Cp 变化时必须重填）
+ */
+void Robot_MPC::Fill_Constraint_Am()
+{
+    const int r0 = 2 * NP * p;                       // Δu 占用的行数 = 120
+    for (int c = 0; c < NCON; ++c)
+        for (int k = 1; k <= NP; ++k) {
+            const int src = k * n + CON[c].idx;
+            const int r   = r0 + 2 * (c * NP + k - 1);
+            Am.row(r)     =  Cp.row(src);
+            Am.row(r + 1) = -Cp.row(src);
+        }
+}
+
+/**
+ * @brief  填充状态约束的右端项
+ *         第 k 步状态 x_k = (Mp·e0)_k + Cp_k·U，约束 lo ≤ x_k ≤ hi 化作
+ *             Cp_k·U ≤  hi − m
+ *            −Cp_k·U ≤ −lo + m
+ * @return 无
+ * @attention 当前值已越界时必须把边界让到它外侧：一步 4 ms 内输入对位置的影响只有
+ *            ~0.005 rad，k=1 的约束几乎等价于约束 e0 本身，不让开必然不可行
+ */
+void Robot_MPC::Fill_Constraint_Bounds()
+{
+    const int r0 = 2 * NP * p;
+    for (int c = 0; c < NCON; ++c) {
+        const double x0 = e0(CON[c].idx);
+        const double lo = std::min(CON[c].lo, x0 - 0.05);
+        const double hi = std::max(CON[c].hi, x0 + 0.05);
+
+        for (int k = 1; k <= NP; ++k) {
+            const double m = Xfree(k * n + CON[c].idx);
+            const int r = r0 + 2 * (c * NP + k - 1);
+            ubA(r)     =  hi - m;
+            ubA(r + 1) = -lo + m;
+        }
+    }
+}
+
+/**
+ * @brief  MPC 主流程：判重建 → 算 g → 更新边界 → 求解 QP → 取第一步 4 个力矩
+ * @param  err  当前误差态 e(10) = x - x_ref
+ * @param  Ll   左腿长 [m]
+ * @param  Lr   右腿长 [m]
+ * @param  u    输出：第一步的 [T_wl, T_wr, T_bl, T_br]，单位 Nm
+ * @return true = 求解成功，u 有效；false = 失败，调用方应改用 Fallback()
+ */
 bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u)
 {
     if (!err.allFinite()) { ok = false; return false; }          // ① 数据检查
@@ -352,6 +422,7 @@ bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u)
 
     qp->getPrimalSolution(U.data());                             // ⑦ 取解
     u = U.head(p);                                               //    只用第一步的 4 个力矩
+    for (int i = 0; i < p; ++i) u_step(i) = u(i) - u_last(i);
 
     return true;                                                 // age 已在第 ③ 步之前累加
 }

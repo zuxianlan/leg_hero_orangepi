@@ -352,10 +352,13 @@ void Vofa_start()
     robot.Vofa_TCP.send_message.v1 = robot.Chassis.Get_T_mpc(1);
     robot.Vofa_TCP.send_message.v2 = robot.Chassis.Get_T_mpc(2);
     robot.Vofa_TCP.send_message.v3 = robot.Chassis.Get_T_mpc(3);
-    robot.Vofa_TCP.send_message.v4 = robot.Chassis.T_lqr[0];
-    robot.Vofa_TCP.send_message.v5 = robot.Chassis.T_lqr[1];
-    robot.Vofa_TCP.send_message.v6 = robot.Chassis.T_lqr[2];
-    robot.Vofa_TCP.send_message.v7 = robot.Chassis.T_lqr[3];
+    robot.Vofa_TCP.send_message.v4 = robot.Chassis.mpc_robot->StepDelta(0);
+    robot.Vofa_TCP.send_message.v5 = robot.Chassis.mpc_robot->StepDelta(1);
+    robot.Vofa_TCP.send_message.v6 = robot.Chassis.mpc_robot->StepDelta(2);
+    robot.Vofa_TCP.send_message.v7 = robot.Chassis.mpc_robot->StepDelta(3);
+
+    robot.Vofa_TCP.send_message.v8 = robot.Chassis.Get_mpc_ok()   ? 1.0f : 0.0f;
+    robot.Vofa_TCP.send_message.v9 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
     robot.Vofa_TCP.Start();
 }
 

@@ -36,6 +36,17 @@ public:
     static constexpr int p  = 4;    // 控制个数
     static constexpr int NP = 15;   // 预测步数：15 * 4ms = 60ms
 
+    // ===== 状态约束配置：{状态下标, 下限, 上限}，单位 rad =====
+    //   θ 取 ±0.5：与 FSM 的负向倒地阈值 -0.5 对齐（正向 FSM 到 +0.9 才触发）
+    //   θ_b 取 ±0.30：FSM 在 ±1.0/1.1 才判翻，这里只作为大倾角时的保底
+    struct ConState { int idx; double lo, hi; };
+    static constexpr int NCON = 3;
+    static constexpr ConState CON[NCON] = {
+        {4, -0.50, 0.50},   // θ_ll 左腿摆角
+        {6, -0.50, 0.50},   // θ_lr 右腿摆角
+        {8, -0.30, 0.30},   // θ_b  机体俯仰
+    };
+
     using VecX = Eigen::Matrix<double, n, 1>;
     using VecU = Eigen::Matrix<double, p, 1>;
 
@@ -44,8 +55,7 @@ public:
     bool Run(const VecX& err, double L_l, double L_r, VecU& u);
 
     /**
-     * @brief LQR 兜底：u = -K·e，再等比缩放到与 MPC 相同的力矩限幅
-     *        等比缩放（而不是逐元素截断）可以保住力矩合成方向
+     * @brief  LQR 兜底：u = -K·e，再等比缩放到与 MPC 相同的力矩限幅
      */
     VecU Fallback(const VecX& err) const
     {
@@ -60,9 +70,6 @@ public:
 
     /**
      * @brief 设置 Δu 约束的起点（上一拍实际生效的通道命令）
-     * @attention 必须夹进盒约束内：LQR 的髋矩按 Fitting_K·err 算，err[8] 上限 1.0、
-     *            K≈-128，能算出 ±100 Nm。若 u_last 超出 [u_min, u_max]，
-     *            k=0 的 Δu 约束与盒约束会互斥，QP 直接 infeasible。
      */
     void SetLastControl(const VecU& u)
     {
@@ -71,12 +78,15 @@ public:
     }
 
     int Iterations() const { return wsr; }
+    double StepDelta(int i) const { return u_step(i); }   // 本拍 u0 − 上一拍 [Nm]
 
 private:
     void Rebuild(double L_l, double L_r, bool cold);  // 重建模型 + H（cold=冷启动 DARE）
     void BuildAB(double L_l, double L_r);   // 腿长 -> Ac, Bc（5x5 精确）
     void BuildGradient();                   // 每周期算 g
     void SetBounds();                       // 每周期更新上下限
+    void Fill_Constraint_Am();              // 状态约束的矩阵行（随 Cp 变，Rebuild 里调）
+    void Fill_Constraint_Bounds();          // 状态约束的上下界（随 e0 变，每周期调）
 
     double dt = 0.004, age = 0.0;   // mpc控制周期，强制重建时间
 
@@ -87,6 +97,7 @@ private:
     Eigen::MatrixXd CtQ, H;                 // 预存项 / Hessian
     Eigen::MatrixXd F, K, Q, R;             // 终端代价 / 增益 / 权重
     Eigen::VectorXd g, Xfree, U;            // 斜率 / 自由响应 / 解
+    Eigen::VectorXd u_step;                 // 本拍 u0 − 上一拍 [Nm]
     Eigen::VectorXd lb, ub, lbA, ubA;       // 上下限
     Eigen::VectorXd u_min, u_max, du;       // 力矩限幅 / 变化率限幅
 
@@ -99,7 +110,7 @@ private:
 
     std::unique_ptr<qpOASES::SQProblem> qp;  // H 会变 -> SQProblem
     bool ready = false, solver_inited = false, ok = false;
-    int  wsr = 0;
+    int  wsr = 0; // QP 迭代计数器
 };
 
 #endif // ROBOT_MPC_H

@@ -53,7 +53,7 @@ include_directories(
 # =========================================================
 # 源文件管理 (Source Files)
 # =========================================================
-file(GLOB_RECURSE SOURCES
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS
         "src/*.cpp"
         "src/*.c"
         "src/*.h"

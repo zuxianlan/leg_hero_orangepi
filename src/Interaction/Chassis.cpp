@@ -225,7 +225,8 @@ void class_Chassis::Follow_Gimbal_Control()
     // 条件与 LQR 的正常分支一致：不在腾空、不在小陀螺
     // 轮矩仍乘打滑系数；髋矩直接使用 MPC 结果
     // 且要求解是「新鲜」的（8 ms 内），防止 4 ms 线程卡住时一直复用旧解
-    if (mpc_enable && MPC_Output_Fresh() && !spin_mode && chassis_fsm_mode != ABOVE_GROUND)
+    mpc_applied = (mpc_enable && MPC_Output_Fresh() && !spin_mode && chassis_fsm_mode != ABOVE_GROUND);
+    if (mpc_applied)
     {
         T[0] = T_mpc[0] * slip_factor_l;
         T[1] = T_mpc[1] * slip_factor_r;

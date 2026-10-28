@@ -165,6 +165,8 @@ public:
     float lqr_term[10] = {};
     float T_lqr[4] = {};          // LQR 本拍四通道结果（已含打滑缩放），仅调试用
     inline float Get_T_mpc(int i) const { return T_mpc[i]; }  
+    inline bool  Get_mpc_ok()   const { return mpc_ok; }       // QP 本拍是否解成功
+    inline bool  Get_mpc_used() const { return mpc_applied; }  // 本拍是否真的用了 MPC
 
 private:
     KalmanFilter kf = KalmanFilter(2,2,0,nullptr,nullptr,nullptr,nullptr,nullptr);
@@ -211,6 +213,7 @@ private:
     float T[4] = {};
     float T_mpc[4] = {};         // MPC 输出：[T_wl, T_wr, T_bl, T_br]
     bool  mpc_ok = false;        // MPC 本周期的结果是否可用
+    bool  mpc_applied = false;   // 本拍是否真的采用 MPC 结果
     std::chrono::steady_clock::time_point mpc_stamp{};   // 最后一次 MPC 求解完成的时刻
     float mpc_u_hist[4] = {};    // 上一拍实际生效的通道命令（MPC 决策变量量纲）
 
