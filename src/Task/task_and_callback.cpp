@@ -34,10 +34,10 @@ float rc_buffer[5][19] = {0};
 Robot robot;
 class_Timer timer_1ms;
 class_Timer timer_2ms;
-class_Timer timer_10ms;
+class_Timer timer_4ms;
 
-using Clock = std::chrono::high_resolution_clock; // ????????????
-using Duration = std::chrono::duration<double>; // ?????????????????��??
+using Clock = std::chrono::high_resolution_clock; 
+using Duration = std::chrono::duration<double>; 
 
 void mc02_callback(std::vector<uint8_t>& data)
 {
@@ -235,16 +235,15 @@ void TIM_2ms_PeriodElapsedCallback()
 
 }
 
-void TIM_10ms_PeriodElapsedCallback()
+/**
+ * @brief 4ms 周期回调：10 状态全状态线性 MPC
+ *        周期必须与 Robot_MPC::Init(0.004) 的 dt 一致
+ *        锁在 MPC_Robot_Calc() 内部（只包数据拷贝），这里不加锁
+ */
+void TIM_4ms_PeriodElapsedCallback()
 {
-    // robot.Chassis.NMPC_Solve();
-    // if(robot.chassis_mode == CHASSIS_INFANTRY_FOLLOW_GIMBAL_YAW && robot.FSM_Chassis.Get_Now_Status_Serial() == NORMAL)
-    // {
-    //     robot.Chassis.MPC_Body_Calc();
-    // }
+    robot.Chassis.MPC_Robot_Calc();
 }
-
-
 
 void Task_Init()
 {
@@ -259,7 +258,7 @@ void Task_Init()
 
     timer_2ms.start(0.001, TIM_2ms_PeriodElapsedCallback);
 
-    timer_10ms.start(0.01, TIM_10ms_PeriodElapsedCallback);
+    timer_4ms.start(0.004, TIM_4ms_PeriodElapsedCallback);
 
 
 }

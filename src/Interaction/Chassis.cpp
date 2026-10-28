@@ -82,6 +82,11 @@ void class_Chassis::Init()
     /******************* mpc *******************/
     MPC_body.MPC_Init();
 
+    /******************* 10 状态 MPC *******************/
+    // dt 必须等于 TIM_4ms 的实际周期（0.004 s）
+    mpc_robot = std::make_unique<Robot_MPC>();
+    mpc_robot->Init(0.004);
+
 }
 
 /*
@@ -144,6 +149,8 @@ void class_Chassis::Zero_Force_Control()
     right_leg.VMC_Calc_2();
     T_R = 0;
     Tp_R = 0;
+
+    Record_MPC_History(T_L, T_R, left_leg.Get_Tp(), right_leg.Get_Tp());
 
     X_filter = 0;
     last_Target_X = 0;
@@ -214,6 +221,18 @@ void class_Chassis::Follow_Gimbal_Control()
     }
     LQR_Calc();
 
+    // ===== 10 状态 MPC 接管（若 4ms 任务已算出有效解）=====
+    // 条件与 LQR 的正常分支一致：不在腾空、不在小陀螺
+    // 轮矩仍乘打滑系数；髋矩直接使用 MPC 结果
+    // 且要求解是「新鲜」的（8 ms 内），防止 4 ms 线程卡住时一直复用旧解
+    if (mpc_enable && MPC_Output_Fresh() && !spin_mode && chassis_fsm_mode != ABOVE_GROUND)
+    {
+        T[0] = T_mpc[0] * slip_factor_l;
+        T[1] = T_mpc[1] * slip_factor_r;
+        T[2] = T_mpc[2];
+        T[3] = T_mpc[3];
+    }
+
     // ===== 左腿控制量计算 =====
     T_L = T[0];
     left_leg.Set_Tp(T[2]- PID_tp_omega.Get_Out()); 
@@ -226,6 +245,17 @@ void class_Chassis::Follow_Gimbal_Control()
     right_leg.Set_F0(-MPC_body.u_out(1) + spring_forcer - M / cosf(right_leg.Get_theta()) - Jump_force - F_mc - 0.0f);
     right_leg.VMC_Calc_2();
     
+    // ===== 记录本拍实际生效的通道命令，供下一拍 Δu 约束当起点 =====
+    // 轮矩反除 slip_factor：T[0..1] 已被打滑系数缩放过，反除回来才是决策变量量纲；
+    //   否则打滑时 u_last 只有 0.35 倍，Δu 会把力矩一拍一拍越拽越低。
+    // 髋矩记 T[2]/T[3]（不含 PID trim）：trim 属于另一个反馈环，不该算进 MPC 的历史。
+    {
+        const bool slip_on = (!spin_mode && chassis_fsm_mode != ABOVE_GROUND);
+        Record_MPC_History(T[0] / (slip_on ? slip_factor_l : 1.0f),
+                           T[1] / (slip_on ? slip_factor_r : 1.0f),
+                           T[2], T[3]);
+    }
+
     last_Target_X = Target_X;
     last_stop_flag = stop_flag;
 }
@@ -266,6 +296,8 @@ void class_Chassis::Check_in_Control()
     }
     right_leg.Set_F0(rr);  // 正力向下，防止腿过度伸展
     right_leg.VMC_Calc_2();
+
+    Record_MPC_History(T_L, T_R, left_leg.Get_Tp(), right_leg.Get_Tp());
 
     // 清零速度滤波器（入场模式下不累积速度估计）
     X_filter = 0;
@@ -334,6 +366,8 @@ void class_Chassis::Control_leg()
     right_leg.Set_F0(-MPC_body.u_out(1) / 1.5 + spring_forcer);
     right_leg.VMC_Calc_2();
 
+    Record_MPC_History(T_L, T_R, left_leg.Get_Tp(), right_leg.Get_Tp());
+
 
 }
 
@@ -355,6 +389,7 @@ void class_Chassis::Control_leg_left(float target)
         left_leg.VMC_Calc_2();
     }
 
+    Record_MPC_History(T_L, T_R, left_leg.Get_Tp(), right_leg.Get_Tp());
 }
 
 void class_Chassis::Control_leg_right(float target)
@@ -374,6 +409,8 @@ void class_Chassis::Control_leg_right(float target)
         right_leg.Set_F0(0.0);
         right_leg.VMC_Calc_2();
     }
+
+    Record_MPC_History(T_L, T_R, left_leg.Get_Tp(), right_leg.Get_Tp());
 }
 
 void class_Chassis::UP_Staris_Control_leg()
@@ -394,14 +431,12 @@ void class_Chassis::UP_Staris_Control_leg()
     T_R = 0;
     X_filter = 0;
 
-    // ���Ŀ��߶��Ƿ����仯�������?�ˣ����´���һ�ι켣�滮
     if (fabs(Target_height - last_Target_height) > 0.001f) 
     {
         height_planner.MoveTo(Now_height, Target_height, Now_dheight, 0.25, 2.5f); // 0.5����ɶ���?
         last_Target_height = Target_height;
     }
 
-    // ���µ�ǰ��ƽ���ο���
     if (height_planner.is_planning) 
     {
         height_planner.Step(dt, current_ref_height, current_ref_dheight);
@@ -439,6 +474,8 @@ void class_Chassis::UP_Staris_Control_leg()
     
     right_leg.Set_F0(-MPC_body.u_out(1) / 3.5 + spring_forcer + 0);
     right_leg.VMC_Calc_2();
+
+    Record_MPC_History(T_L, T_R, left_leg.Get_Tp(), right_leg.Get_Tp());
 
     X_filter = 0;
     last_Target_X = 0;
@@ -616,7 +653,6 @@ void class_Chassis::MPC_Body_Calc()
         last_Target_height = Target_height;
     }
 
-    // ���µ�ǰ��ƽ���ο���
     if (height_planner.is_planning) 
     {
         height_planner.Step(dt, current_ref_height, current_ref_dheight);
@@ -743,4 +779,45 @@ void class_Chassis::LQR_Calc()
     lqr_term[7] = err[7] * Fitting_K[0][7];
     lqr_term[8] = err[8] * Fitting_K[0][8];
     lqr_term[9] = err[9] * Fitting_K[0][9];
+}
+
+/**
+ * @brief 10 状态 MPC 计算（4 ms 任务调用，输出 T_mpc[4] / mpc_ok）
+ *
+ * 为什么锁要在函数内部：
+ *   TIM_4ms 与 TIM_1ms/2ms 是两个线程，共用 mc_02->rx_mutex。
+ *   Run() 内部可能触发 0.3~0.8 ms 的模型重建，如果像其他任务那样
+ *   在回调最外层加锁，1 kHz 任务会被堵这么久。所以这里只锁两次
+ *   「数据拷贝」的瞬间，求解全程不持锁。
+ */
+void class_Chassis::MPC_Robot_Calc()
+{
+    Robot_MPC::VecX e;
+    Robot_MPC::VecU u_last;
+    double Ll, Lr;
+
+    // ---------- 锁内：只拷贝数据 ----------
+    {
+        std::lock_guard<std::mutex> lock(mc_02->rx_mutex);
+        for (int i = 0; i < 10; ++i) e(i) = static_cast<double>(err[i]);
+        Ll = static_cast<double>(left_leg.Get_L0());
+        Lr = static_cast<double>(right_leg.Get_L0());
+        // 历史取「上一拍实际生效的通道命令」，不是 T_mpc：MPC 在 LQR 接管/打滑缩放
+        // 期间照样在算，T_mpc 与真正施加到电机的力矩不是一回事。
+        for (int i = 0; i < 4; ++i) u_last(i) = static_cast<double>(mpc_u_hist[i]);
+    }   // ← 自动解锁
+
+    // ---------- 锁外：求解（可能重建模型）----------
+    Robot_MPC::VecU u;
+    mpc_robot->SetLastControl(u_last);
+    bool ok = mpc_robot->Run(e, Ll, Lr, u);
+    if (!ok) u = mpc_robot->Fallback(e);      // QP 失败 -> LQR 兜底（已含等比限幅）
+
+    // ---------- 锁内：只写结果 ----------
+    {
+        std::lock_guard<std::mutex> lock(mc_02->rx_mutex);
+        for (int i = 0; i < 4; ++i) T_mpc[i] = static_cast<float>(u(i));
+        mpc_ok = ok;
+        mpc_stamp = std::chrono::steady_clock::now();   // 1 ms 侧据此判断输出是否过期
+    }
 }

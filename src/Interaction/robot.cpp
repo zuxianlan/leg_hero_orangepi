@@ -155,7 +155,6 @@ void Class_FSM_Jump::TIM_1ms_Calculate_PeriodElapsedCallback()
     Status[Now_Status_Serial].Count_Time++;
     static int mod = 0;
 
-    // �Լ����ű�д״̬ת�ƺ���
     switch (Now_Status_Serial)
     {
     case BEND_LEG:
@@ -1025,10 +1024,9 @@ void Robot::Remote_update()
         {
             if (!yaw_rotate_active)
             {
-                // ��ȡ��ǰʵ�ʺ���ǣ����Ե���������� IMU��
                 float current_yaw = mc02_SerialPort.Rx_Data.motor_yaw_angle;
-                target_yaw_abs = current_yaw + M_PI;   // �� 180��
-                // ��һ���� [-��, ��] ���䣨��ѡ��
+                target_yaw_abs = current_yaw + M_PI; 
+
                 if (target_yaw_abs > M_PI) target_yaw_abs -= 2.0f * M_PI;
                 if (target_yaw_abs < -M_PI) target_yaw_abs += 2.0f * M_PI;
                 yaw_rotate_active = true;

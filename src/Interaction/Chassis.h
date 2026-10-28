@@ -17,6 +17,9 @@
 #include "Algorithm/PID/PID_Control.h"
 #include "Algorithm/Slope/slope.h"
 #include "Algorithm/LESO/LESO.h"
+#include "Robot_MPC.h"          // 10 状态线性 MPC（注意：必须放在 #define N 之前）
+#include <memory>
+#include <chrono>               // MPC 输出新鲜度时间戳
 /* Define --------------------------------------------------------------------*/
 
 #define spring_forceL 0
@@ -83,6 +86,11 @@ public:
 
     MPC_Controller MPC_body = MPC_Controller(4, 2, 0, N);
 
+    // 10 状态全状态线性 MPC：替代 LQR 输出 T[0..3]（轮矩L/R + 髋矩L/R）
+    std::unique_ptr<Robot_MPC> mpc_robot;
+    bool mpc_enable = true;      // ★ 调试开关：false = 完全退回原 LQR
+    float mpc_timeout = 0.008f;  // 输出新鲜度上限 [s]：超过 8 ms（2 个 MPC 周期）未更新就退回 LQR
+
     // Class_LESO LESO_left = Class_LESO(6, 2, 6, 2, 0.002f);  
     // Class_LESO LESO_right = Class_LESO(6, 2, 6, 2, 0.002f);  
 
@@ -111,6 +119,7 @@ public:
     void Slip_Detection_And_Suppression();
     void MPC_Body_Calc();
     void LQR_Calc();
+    void MPC_Robot_Calc();          // 4ms 任务调用：10 状态 MPC 求解一次
 
     inline void Set_Target_X(float __Target_X)                         { Target_X = __Target_X; }
     inline void Set_Target_Velocity(float __Target_Velocity)           { Target_Velocity = __Target_Velocity; }
@@ -148,6 +157,24 @@ public:
     inline float Get_v_filter()                                        { return kf.x_hat(0); }
     inline float Get_a_filter()                                        { return kf.x_hat(1); } 
 
+    /**
+     * @brief MPC 输出是否仍可用：求解成功 **且** 距今不超过 mpc_timeout
+     *
+     * 为什么需要：T_mpc / mpc_ok 只由 4 ms 线程更新。若该线程卡住（重建变慢、
+     * 被高优先级任务挤占、甚至线程退出），1 ms 侧会一直复用几十毫秒前的旧解，
+     * 而且全程没有任何告警。这里用时间戳把「最后一次有效求解」限制在 8 ms 内。
+     *
+     * 写端 MPC_Robot_Calc() 与读端 Follow_Gimbal_Control() 都持 rx_mutex，
+     * 所以 mpc_ok / mpc_stamp 不需要 std::atomic。
+     */
+    inline bool MPC_Output_Fresh() const
+    {
+        if (!mpc_ok) { return false; }
+        const std::chrono::duration<double> d =
+                std::chrono::steady_clock::now() - mpc_stamp;
+        return d.count() <= static_cast<double>(mpc_timeout);
+    }
+
     float ll,rr = 0;
     float lqr_term[10] = {};
 
@@ -155,30 +182,8 @@ public:
 private:
     KalmanFilter kf = KalmanFilter(2,2,0,nullptr,nullptr,nullptr,nullptr,nullptr);
 
-    // Eigen::VectorXf z0 = Eigen::VectorXf::Zero(6+2);
-    // Eigen::VectorXf u_left = Eigen::VectorXf::Zero(2);
-    // Eigen::VectorXf y_left = Eigen::VectorXf::Zero(6);
-    // Eigen::VectorXf u_right = Eigen::VectorXf::Zero(2);
-    // Eigen::VectorXf y_right = Eigen::VectorXf::Zero(6);
-    // Eigen::VectorXf d_hat_left = Eigen::VectorXf::Zero(2);
-    // Eigen::VectorXf d_hat_right = Eigen::VectorXf::Zero(2);
-    // Eigen::VectorXf last_d_hat_left = Eigen::VectorXf::Zero(2);
-    // Eigen::VectorXf last_d_hat_right = Eigen::VectorXf::Zero(2);
-    // Eigen::MatrixXf Ae = Eigen::MatrixXf::Zero(8,8);
-    // Eigen::MatrixXf Be = Eigen::MatrixXf::Zero(8,2);
-    // Eigen::MatrixXf Ce = Eigen::MatrixXf::Zero(6,8);
-    // Eigen::MatrixXf A = Eigen::MatrixXf::Zero(6,6);
-    // Eigen::MatrixXf B = Eigen::MatrixXf::Zero(6,2);
-    // Eigen::MatrixXf L_Gein = Eigen::MatrixXf::Zero(8,6);
-
     float Fitting_K[4][10] = {};
     float err[10] = {};
-
-    // float I_r = 1.5;
-    // float r = 0.16;
-    // float m = 25.0;
-    // float k = 0;
-    // float b = -1000;
 
     float spring_forcel = 0;
     float spring_forcer = 0;
@@ -208,10 +213,6 @@ private:
     float Velocity_filter = 0; 
     float X_filter = 0; 
 
-    // float pitch_r = 0;
-    // float d_pitch_r = 0;
-    float pitch_l = 0;
-    float d_pitch_l = 0;
     float total_yaw = 0;
     float theta_err = 0; 
     float dtheta_err = 0; 
@@ -221,15 +222,20 @@ private:
     float leg_tp = 0; 
 
     float T[4] = {};
-    float T_L = 0, T_R = 0;
-    //float T_L_M = 0, T_R_M = 0;
-    //float T_L_Speed = 0, T_R_Speed = 0;
-    float Tp_L = 0, Tp_R = 0;
-    // float T_L_YAW = 0, T_R_YAW = 0;
-    // float T_L_limit = 0, T_R_limit = 0;
+    float T_mpc[4] = {};         // MPC 输出：[T_wl, T_wr, T_bl, T_br]
+    bool  mpc_ok = false;        // MPC 本周期的结果是否可用
+    std::chrono::steady_clock::time_point mpc_stamp{};   // 最后一次 MPC 求解完成的时刻
+    float mpc_u_hist[4] = {};    // 上一拍实际生效的通道命令（MPC 决策变量量纲）
 
-    // float Nthetal = 0;
-    // float Nthetar = 0;
+    // 记录本拍实际生效的通道命令，供下一拍 Δu 约束当起点
+    inline void Record_MPC_History(float wl, float wr, float hl, float hr)
+    {
+        mpc_u_hist[0] = wl; mpc_u_hist[1] = wr;
+        mpc_u_hist[2] = hl; mpc_u_hist[3] = hr;
+    }
+    float T_L = 0, T_R = 0;
+    float Tp_L = 0, Tp_R = 0;
+
     float M = 50;
     float Jump_force = 0;
     float F_mc = 0;
@@ -240,11 +246,7 @@ private:
     bool last_stop_flag = true;
     bool spin_mode = false;
 
-    //float Wheel_Factor = 0.0f;
     float last_Target_height = 0.0f;
-
-    // float lambda1 = -0.0;
-    // float lambda2 = -0.0;
 
 
     float dt = 0.002;
