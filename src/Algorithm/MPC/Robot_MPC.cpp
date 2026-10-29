@@ -100,7 +100,7 @@ void Robot_MPC::Init(double dt_)
     dt = dt_;
     const int nX = (NP + 1) * n;   // 160：未来 0..15 步的状态
     const int nU = NP * p;         // 60 ：未来 15 步的控制
-    const int nC = 2 * nU + 2 * NP * NCON;   // 210：120 行 Δu + 90 行状态约束（3 状态 × 15 步 × 2）
+    const int nC = NROW_ALL;                 // 行数由头文件 MPC_CFG 自动决定
 
     Ac = Eigen::MatrixXd::Zero(n, n);
     Bc = Eigen::MatrixXd::Zero(n, p);
@@ -129,8 +129,8 @@ void Robot_MPC::Init(double dt_)
     K = Eigen::MatrixXd::Zero(p, n);
 
     // 力矩限幅与变化率限幅（★上线前按实测峰值修改★）
-    u_min.resize(p); u_min << -5.0, -5.0, -45.0, -45.0;   // [T_wl, T_wr, T_bl, T_br]
-    u_max.resize(p); u_max <<  5.0,  5.0,  45.0,  45.0;
+    u_min.resize(p); u_min << -15.0, -15.0, -45.0, -45.0;   // [T_wl, T_wr, T_bl, T_br]
+    u_max.resize(p); u_max <<  15.0,  15.0,  45.0,  45.0;
     // du = 每个预测步(4ms)允许的力矩变化量，即速率限制：
     du.resize(p);    du    <<   2.0,   2.0,   8.0,   8.0;   // Nm / 每步(4ms)
 
@@ -193,7 +193,6 @@ void Robot_MPC::BuildAB(double Ll, double Lr)
     GE(4,3) = Rl/Rw;  GE(4,4) = -Rl/Rw;
 
     const Eigen::Matrix<double, 5, 7> Qq = M.partialPivLu().solve(GE);
--
     Ac.setZero();
     Bc.setZero();
     Ac(0,1) = Ac(2,3) = Ac(4,5) = Ac(6,7) = Ac(8,9) = 1.0;   // 位置导数 = 速度
@@ -342,38 +341,90 @@ void Robot_MPC::SetBounds()
  */
 void Robot_MPC::Fill_Constraint_Am()
 {
-    const int r0 = 2 * NP * p;                       // Δu 占用的行数 = 120
+    int r = NROW_DU;                     // 前 NROW_DU 行是 Δu，已在 Rebuild() 里填好
+
+    // ---- ① 绝对状态约束（θ 随腿长、θ_b 固定）----
     for (int c = 0; c < NCON; ++c)
         for (int k = 1; k <= NP; ++k) {
             const int src = k * n + CON[c].idx;
-            const int r   = r0 + 2 * (c * NP + k - 1);
             Am.row(r)     =  Cp.row(src);
             Am.row(r + 1) = -Cp.row(src);
+            r += 2;
         }
+
+    // ---- ② 绝对速度约束 |v_k| <= VEL_ABS_MAX ----
+    if constexpr (MPC_CFG::VEL_ABS_ON) {
+        for (int k = 1; k <= NP; ++k) {
+            const int src = k * n + 1;                 // 状态 1 = ds
+            Am.row(r)     =  Cp.row(src);
+            Am.row(r + 1) = -Cp.row(src);
+            r += 2;
+        }
+    }
+
+    // ---- ③ 加速度约束 |v_k - v_{k-1}| <= ACC_MAX·dt ----
+    if constexpr (MPC_CFG::VEL_RATE_ON) {
+        for (int k = 1; k <= NP; ++k) {
+            Am.row(r)     =  Cp.row(k*n + 1) - Cp.row((k-1)*n + 1);
+            Am.row(r + 1) = -Am.row(r);
+            r += 2;
+        }
+    }
 }
 
 /**
- * @brief  填充状态约束的右端项
- *         第 k 步状态 x_k = (Mp·e0)_k + Cp_k·U，约束 lo ≤ x_k ≤ hi 化作
+ * @brief  填充所有约束的右端项（每周期调用，随 e0 / 腿长 / v_ref 变化）
+ *         第 k 步状态 x_k = Xfree_k + Cp_k·U，约束 lo ≤ x_k ≤ hi 化作
  *             Cp_k·U ≤  hi − m
  *            −Cp_k·U ≤ −lo + m
  * @return 无
- * @attention 当前值已越界时必须把边界让到它外侧：一步 4 ms 内输入对位置的影响只有
- *            ~0.005 rad，k=1 的约束几乎等价于约束 e0 本身，不让开必然不可行
  */
 void Robot_MPC::Fill_Constraint_Bounds()
 {
-    const int r0 = 2 * NP * p;
+    int r = NROW_DU;
+
+    // ---- ① 绝对状态约束 ----
     for (int c = 0; c < NCON; ++c) {
+        double lo = CON[c].lo, hi = CON[c].hi;
+        if (CON[c].leg >= 0) {                     // 摆角：按对应腿长算限幅
+            const double lim = ThetaLimit(Lnow(CON[c].leg));
+            lo = -lim;
+            hi =  lim;
+        }
         const double x0 = e0(CON[c].idx);
-        const double lo = std::min(CON[c].lo, x0 - 0.05);
-        const double hi = std::max(CON[c].hi, x0 + 0.05);
+        lo = std::min(lo, x0 - MPC_CFG::CON_RELAX);   // 已越界时让开，保证可行
+        hi = std::max(hi, x0 + MPC_CFG::CON_RELAX);
 
         for (int k = 1; k <= NP; ++k) {
-            const double m = Xfree(k * n + CON[c].idx);
-            const int r = r0 + 2 * (c * NP + k - 1);
+            const double m = Xfree(k*n + CON[c].idx);
             ubA(r)     =  hi - m;
             ubA(r + 1) = -lo + m;
+            r += 2;
+        }
+    }
+
+    // ---- ② 绝对速度约束：v = e1 + vref ----
+    if constexpr (MPC_CFG::VEL_ABS_ON) {
+        const double margin = MPC_CFG::ACC_MAX * dt;   // 一步最多能变多少
+        const double x1 = e0(1);
+        const double lo = std::min(-MPC_CFG::VEL_ABS_MAX - vref, x1 - margin);
+        const double hi = std::max( MPC_CFG::VEL_ABS_MAX - vref, x1 + margin);
+        for (int k = 1; k <= NP; ++k) {
+            const double m = Xfree(k*n + 1);
+            ubA(r)     =  hi - m;
+            ubA(r + 1) = -lo + m;
+            r += 2;
+        }
+    }
+
+    // ---- ③ 加速度约束（vref 在相邻两步相减时抵消）----
+    if constexpr (MPC_CFG::VEL_RATE_ON) {
+        const double dv = MPC_CFG::ACC_MAX * dt;       // 每步允许的速度变化
+        for (int k = 1; k <= NP; ++k) {
+            const double m = Xfree(k*n + 1) - Xfree((k-1)*n + 1);
+            ubA(r)     =  dv - m;
+            ubA(r + 1) =  dv + m;
+            r += 2;
         }
     }
 }
@@ -386,11 +437,12 @@ void Robot_MPC::Fill_Constraint_Bounds()
  * @param  u    输出：第一步的 [T_wl, T_wr, T_bl, T_br]，单位 Nm
  * @return true = 求解成功，u 有效；false = 失败，调用方应改用 Fallback()
  */
-bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u)
+bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u, double v_ref)
 {
     if (!err.allFinite()) { ok = false; return false; }          // ① 数据检查
 
     e0 = err;                                                    // ② 存当前误差态
+    vref = v_ref;                                                //    参考速度（绝对速度约束用）
     Lnow << std::clamp(Ll, 0.107, 0.332), std::clamp(Lr, 0.107, 0.332);
 
     age += dt;

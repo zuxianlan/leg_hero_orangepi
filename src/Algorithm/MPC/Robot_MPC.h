@@ -29,6 +29,47 @@
 #include <algorithm>
 #include <cmath>
 
+
+// ============================================================================
+//  ★★★ 约束集中配置区：所有约束只改这一段 ★★★
+// ============================================================================
+namespace MPC_CFG
+{
+    // ---- 1) 力矩盒约束 [T_wl, T_wr, T_bl, T_br]，单位 Nm ----
+    constexpr double U_MIN[4] = {-15.0,  -15.0, -45.0, -45.0};
+    constexpr double U_MAX[4] = { 15.0,   15.0,  45.0,  45.0};
+
+    // ---- 2) 力矩变化率，单位 Nm / 每步(=dt=4ms) ----
+    constexpr double DU[4] = {2.0, 2.0, 5.0, 5.0};
+
+    // ---- 3) 摆角限幅随腿长线性变化（腿越长，允许摆角越小）----
+    //   最短腿 LEG_MIN -> ±THETA_AT_MIN
+    //   最长腿 LEG_MAX -> ±THETA_AT_MAX
+    //   ★若方向反了，把这两个值对调即可
+    constexpr double LEG_MIN      = 0.107;
+    constexpr double LEG_MAX      = 0.332;
+    constexpr double THETA_AT_MIN = 0.40;    // L = 0.107 时的摆角限幅
+    constexpr double THETA_AT_MAX = 0.15;    // L = 0.332 时的摆角限幅
+
+    // ---- 4) 机体俯仰限幅，单位 rad ----
+    constexpr double PITCH_MAX = 0.30;
+
+    // ---- 5) 绝对速度约束（安全上限，必须 > 你的 MAX_Velocity）----
+    constexpr bool   VEL_ABS_ON  = true;
+    constexpr double VEL_ABS_MAX = 2.5;      // m/s，略大于 MAX_Velocity(=2)
+
+    // ---- 6) 加速度约束（相邻步速度变化率）----
+    //   ★注意单位★ 这里限的是模型里的 ds̈，不是整车的物理加速度：
+    //   模型 B(1,:) 给出「2 个轮子各 1 Nm → ds̈ ≈ 11 m/s²」，
+    //   而按整车质量算的物理值只有 2/(r·m) ≈ 0.81 m/s²/Nm，两者差约 13.6 倍。
+    //   所以：想要「物理加速度 3.3 m/s²」→ ACC_MAX ≈ 45。
+    constexpr bool   VEL_RATE_ON = true;
+    constexpr double ACC_MAX     = 45.0;     // 模型尺度；≈3.3 m/s² 物理加速度
+
+    // ---- 7) 状态约束的越界让开量（防止初始已越界时 QP 不可行）----
+    constexpr double CON_RELAX = 0.05;       // rad
+}
+
 class Robot_MPC
 {
 public:
@@ -36,23 +77,39 @@ public:
     static constexpr int p  = 4;    // 控制个数
     static constexpr int NP = 15;   // 预测步数：15 * 4ms = 60ms
 
-    // ===== 状态约束配置：{状态下标, 下限, 上限}，单位 rad =====
-    //   θ 取 ±0.5：与 FSM 的负向倒地阈值 -0.5 对齐（正向 FSM 到 +0.9 才触发）
-    //   θ_b 取 ±0.30：FSM 在 ±1.0/1.1 才判翻，这里只作为大倾角时的保底
-    struct ConState { int idx; double lo, hi; };
+    // ===== 状态约束：{状态下标, 腿长来源, 下限, 上限} =====
+    //   leg = -1 → 用固定 lo/hi
+    //   leg =  0 → 用左腿长算摆角限幅   leg = 1 → 用右腿长
+    struct ConState { int idx; int leg; double lo, hi; };
     static constexpr int NCON = 3;
     static constexpr ConState CON[NCON] = {
-        {4, -0.50, 0.50},   // θ_ll 左腿摆角
-        {6, -0.50, 0.50},   // θ_lr 右腿摆角
-        {8, -0.30, 0.30},   // θ_b  机体俯仰
+        {4,  0, 0.0, 0.0},                                   // θ_ll：随左腿长
+        {6,  1, 0.0, 0.0},                                   // θ_lr：随右腿长
+        {8, -1, -MPC_CFG::PITCH_MAX, MPC_CFG::PITCH_MAX},    // θ_b ：固定
     };
+
+    /// 腿长 -> 摆角限幅（线性插值）
+    static double ThetaLimit(double L)
+    {
+        const double t = std::clamp(
+            (L - MPC_CFG::LEG_MIN) / (MPC_CFG::LEG_MAX - MPC_CFG::LEG_MIN), 0.0, 1.0);
+        return MPC_CFG::THETA_AT_MIN + t * (MPC_CFG::THETA_AT_MAX - MPC_CFG::THETA_AT_MIN);
+    }
+
+    // ===== 各类约束占用的行数（Init 里用来算 nC）=====
+    static constexpr int NROW_DU    = 2 * NP * p;                     // Δu
+    static constexpr int NROW_CON   = 2 * NP * NCON;                  // 绝对状态
+    static constexpr int NROW_VABS  = MPC_CFG::VEL_ABS_ON  ? 2 * NP : 0;  // 绝对速度
+    static constexpr int NROW_VRATE = MPC_CFG::VEL_RATE_ON ? 2 * NP : 0;  // 加速度
+    static constexpr int NROW_ALL   = NROW_DU + NROW_CON + NROW_VABS + NROW_VRATE;
 
     using VecX = Eigen::Matrix<double, n, 1>;
     using VecU = Eigen::Matrix<double, p, 1>;
 
     void Init(double dt);
 
-    bool Run(const VecX& err, double L_l, double L_r, VecU& u);
+    bool Run(const VecX& err, double L_l, double L_r, VecU& u,
+             double v_ref = 0.0);
 
     /**
      * @brief  LQR 兜底：u = -K·e，再等比缩放到与 MPC 相同的力矩限幅
@@ -89,6 +146,7 @@ private:
     void Fill_Constraint_Bounds();          // 状态约束的上下界（随 e0 变，每周期调）
 
     double dt = 0.004, age = 0.0;   // mpc控制周期，强制重建时间
+    double vref = 0.0;              // 当前参考速度（绝对速度约束用）
 
     Eigen::MatrixXd Ac, Bc;                 // 连续模型
     Eigen::MatrixXd Ad, Bd;                 // 离散模型

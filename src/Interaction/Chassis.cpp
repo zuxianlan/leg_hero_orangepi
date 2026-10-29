@@ -814,7 +814,7 @@ void class_Chassis::MPC_Robot_Calc()
     // ---------- 锁外：求解（可能重建模型）----------
     Robot_MPC::VecU u;
     mpc_robot->SetLastControl(u_last);
-    bool ok = mpc_robot->Run(e, Ll, Lr, u);
+    bool ok = mpc_robot->Run(e, Ll, Lr, u, static_cast<double>(Target_Velocity));
     if (!ok) u = mpc_robot->Fallback(e);      // QP 失败 -> LQR 兜底（已含等比限幅）
 
     // ---------- 锁内：只写结果 ----------
