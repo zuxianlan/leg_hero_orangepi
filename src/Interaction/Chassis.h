@@ -167,6 +167,8 @@ public:
     inline float Get_T_mpc(int i) const { return T_mpc[i]; }  
     inline bool  Get_mpc_ok()   const { return mpc_ok; }       // QP 本拍是否解成功
     inline bool  Get_mpc_used() const { return mpc_applied; }  // 本拍是否真的用了 MPC
+    inline bool  Get_mpc_rebuild_ok() const { return mpc_robot && mpc_robot->RebuildOK(); }
+    inline bool  Get_mpc_riccati_ok() const { return mpc_robot && mpc_robot->RiccatiOK(); }
 
 private:
     KalmanFilter kf = KalmanFilter(2,2,0,nullptr,nullptr,nullptr,nullptr,nullptr);

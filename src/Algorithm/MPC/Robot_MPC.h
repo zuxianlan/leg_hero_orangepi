@@ -141,6 +141,8 @@ public:
     }
 
     int Iterations() const { return wsr; }
+    bool RebuildOK() const { return rebuild_ok; }   // 重建是否成功
+    bool RiccatiOK() const { return riccati_ok; }   // Riccati 是否发散
     double StepDelta(int i) const { return u_step(i); }   // 本拍 u0 − 上一拍 [Nm]
 
 private:
@@ -174,6 +176,8 @@ private:
 
     std::unique_ptr<qpOASES::SQProblem> qp;  // H 会变 -> SQProblem
     bool ready = false, solver_inited = false, ok = false;
+    bool rebuild_ok = false;   // 最近一次 Rebuild 的数据是否有效（有限 + Riccati 未发散）
+    bool riccati_ok = false;   // Dare 是否正常返回
     int  wsr = 0; // QP 迭代计数器
 };
 

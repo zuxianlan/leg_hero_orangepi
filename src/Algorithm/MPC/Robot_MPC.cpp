@@ -66,7 +66,7 @@ void LegParams(double L, double* o)
 // 反复用 P <- Q + Acl'·P·Acl + K'·R·K 更新，直到 P 不再变化。
 // 收敛后的 P 就是"从当前状态走到无穷远的代价矩阵"，同时得到 LQR 增益 K。
 // P 用上一周期的结果热启动（腿长变化很慢），通常几次迭代就收敛。
-void Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
+bool Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
           const Eigen::MatrixXd& Q, const Eigen::MatrixXd& R,
           Eigen::MatrixXd& P, Eigen::MatrixXd& K, int maxit)
 {
@@ -79,13 +79,14 @@ void Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
         const Eigen::MatrixXd Pn  = Q + Acl.transpose() * P * Acl
                                       + Kk.transpose() * R * Kk;           // 更新 P
 
-        if (!Pn.allFinite()) { P = Q; K.setZero(); return; }               // 数值发散保护
+        if (!Pn.allFinite()) { P = Q; K.setZero(); return false; }               // 数值发散保护
 
         const double e = (Pn - P).cwiseAbs().maxCoeff();
         const double s = 1.0 + P.cwiseAbs().maxCoeff();
         P = Pn; K = Kk;
-        if (e < 1e-9 * s) return;                                          // 收敛
+        if (e < 1e-9 * s) return true;                                          // 收敛
     }
+    return true;   // 迭代用满（热启动跟踪常见），P/K 仍可用
 }
 
 } // namespace
@@ -244,7 +245,7 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
     Bd = (Eigen::MatrixXd::Identity(n, n) * dt + 0.5 * Adt * dt) * Bc;
 
     // ③ Riccati -> F(=P) 终端代价，同时得到兜底增益 K
-    Dare(Ad, Bd, Q, R, F, K, cold ? 3000 : 40);   // 冷启动收敛 / 热启动跟踪
+    riccati_ok = Dare(Ad, Bd, Q, R, F, K, cold ? 3000 : 40);   // 冷启动收敛 / 热启动跟踪
 
     Mp.setZero();
     Cp.setZero();
@@ -291,7 +292,17 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
 
     Lold << Ll, Lr;
     age = 0.0;
-    ready = true;
+
+    // ---- 重建结果自检：任何一块矩阵出现 NaN/Inf 都判失败 ----
+    rebuild_ok = riccati_ok
+              && Ac.allFinite() && Bc.allFinite()
+              && Ad.allFinite() && Bd.allFinite()
+              && Mp.allFinite() && Cp.allFinite()
+              && CtQ.allFinite() && H.allFinite()
+              && F.allFinite()  && K.allFinite();
+
+    // 失败时不置 ready：下一拍会重试重建（自愈）；期间 Run 直接返回失败
+    ready = rebuild_ok;
 }
 
 /**
@@ -449,6 +460,8 @@ bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u, double v_ref
     // ③ 腿长变化 >2mm 或超过 100ms -> 重建
     if (!ready || (Lnow - Lold).cwiseAbs().maxCoeff() > 2e-3 || age > 0.1)
         Rebuild(Lnow(0), Lnow(1), false);     // 热启动：只跟踪几十次
+
+    if (!rebuild_ok) { ok = false; return false; }                // 模型数据不可信 -> 兜底
 
     BuildGradient();                                             // ④ 算 g
     SetBounds();                                                 // ⑤ 更新边界

@@ -359,6 +359,8 @@ void Vofa_start()
 
     robot.Vofa_TCP.send_message.v8 = robot.Chassis.Get_mpc_ok()   ? 1.0f : 0.0f;
     robot.Vofa_TCP.send_message.v9 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
+    robot.Vofa_TCP.send_message.v10 = robot.Chassis.Get_mpc_rebuild_ok() ? 1.0f : 0.0f;
+    robot.Vofa_TCP.send_message.v11 = robot.Chassis.Get_mpc_riccati_ok() ? 1.0f : 0.0f;
     robot.Vofa_TCP.Start();
 }
 
