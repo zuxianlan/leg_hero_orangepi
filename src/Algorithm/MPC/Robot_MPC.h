@@ -54,6 +54,10 @@ namespace MPC_CFG
     // ---- 4) 机体俯仰限幅，单位 rad ----
     constexpr double PITCH_MAX = 0.30;
 
+    // ---- 4b) 摆杆角速度限幅，单位 rad/s ----
+    constexpr double DTHETA_MAX = 2.0;      // |dθ_ll|, |dθ_lr| 上限
+    constexpr double RATE_RELAX = 1.0;      // 角速度约束越界时的让开量 [rad/s]
+
     // ---- 5) 绝对速度约束（安全上限，必须 > 你的 MAX_Velocity）----
     constexpr bool   VEL_ABS_ON  = true;
     constexpr double VEL_ABS_MAX = 2.5;      // m/s，略大于 MAX_Velocity(=2)
@@ -80,12 +84,14 @@ public:
     // ===== 状态约束：{状态下标, 腿长来源, 下限, 上限} =====
     //   leg = -1 → 用固定 lo/hi
     //   leg =  0 → 用左腿长算摆角限幅   leg = 1 → 用右腿长
-    struct ConState { int idx; int leg; double lo, hi; };
-    static constexpr int NCON = 3;
+    struct ConState { int idx; int leg; double lo, hi; double relax; };
+    static constexpr int NCON = 5;
     static constexpr ConState CON[NCON] = {
-        {4,  0, 0.0, 0.0},                                   // θ_ll：随左腿长
-        {6,  1, 0.0, 0.0},                                   // θ_lr：随右腿长
-        {8, -1, -MPC_CFG::PITCH_MAX, MPC_CFG::PITCH_MAX},    // θ_b ：固定
+        {4,  0, 0.0, 0.0, MPC_CFG::CON_RELAX},                              // θ_ll：随左腿长
+        {6,  1, 0.0, 0.0, MPC_CFG::CON_RELAX},                              // θ_lr：随右腿长
+        {8, -1, -MPC_CFG::PITCH_MAX, MPC_CFG::PITCH_MAX, MPC_CFG::CON_RELAX},// θ_b ：固定
+        {5, -1, -MPC_CFG::DTHETA_MAX, MPC_CFG::DTHETA_MAX, MPC_CFG::RATE_RELAX}, // dθ_ll
+        {7, -1, -MPC_CFG::DTHETA_MAX, MPC_CFG::DTHETA_MAX, MPC_CFG::RATE_RELAX}, // dθ_lr
     };
 
     /// 腿长 -> 摆角限幅（线性插值）

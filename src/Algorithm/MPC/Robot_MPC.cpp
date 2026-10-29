@@ -392,8 +392,8 @@ void Robot_MPC::Fill_Constraint_Bounds()
             hi =  lim;
         }
         const double x0 = e0(CON[c].idx);
-        lo = std::min(lo, x0 - MPC_CFG::CON_RELAX);   // 已越界时让开，保证可行
-        hi = std::max(hi, x0 + MPC_CFG::CON_RELAX);
+        lo = std::min(lo, x0 - CON[c].relax);         // 已越界时让开，保证可行
+        hi = std::max(hi, x0 + CON[c].relax);
 
         for (int k = 1; k <= NP; ++k) {
             const double m = Xfree(k*n + CON[c].idx);
