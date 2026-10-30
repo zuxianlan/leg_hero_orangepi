@@ -328,7 +328,7 @@ void Robot::Init()
     Chassis.mc_02 = &mc02_SerialPort;
     Chassis.Init();
 
-    Slope_X.Init(1.0f/5000.0f, 1.0f/600.0f, Slope_First_REAL);
+    Slope_X.Init(1.0f/5000.0f, SLOPE_X_DECREASE_BASE, Slope_First_REAL);
     Slope_X.Set_Max_Target_Up_Delta(2.5f);
     Slope_X.Set_Max_Target_Down_Delta(2.5f);
     Slope_X.Set_Adaptive_Gain(0.20f);
@@ -375,18 +375,27 @@ void Robot::Chassis_Control()
     static int mod = 0;
 
     // --- 1. 超级电容加速模式：提高速度上限和斜坡增速率 ---
+    float slope_x_increase;
     if (Supercap_Accelerate_Status == true)
     {
         tmp_chassis_velocity_max = 4.0f;
         tmp_chassis_omega_max = 6.0f * std::numbers::pi;
-        Slope_X.Set_Increase_Value(5.0f / 1000.0f);
+        slope_x_increase = 5.0f / 1000.0f;
     }
     else
     {
         tmp_chassis_velocity_max = 3.0f;
         tmp_chassis_omega_max = 4.0f * std::numbers::pi;
-        Slope_X.Set_Increase_Value(3.0f / 1000.0f);
+        slope_x_increase = 3.0f / 1000.0f;
     }
+
+    // --- 1b. 斜坡步长按腿长缩放：腿越长，允许的加减速越小，防止长腿猛推时摆腿过大翻倒 ---
+    float slope_x_t = (fmaxf(Chassis.left_leg.Get_L0(), Chassis.right_leg.Get_L0()) - SLOPE_X_LEG_SHORT)
+                    / (SLOPE_X_LEG_LONG - SLOPE_X_LEG_SHORT);
+    Float_Math_Constrain(&slope_x_t, 0.0f, 1.0f);
+    const float slope_x_scale = 1.0f + slope_x_t * (SLOPE_X_SCALE_LONG - 1.0f);
+    Slope_X.Set_Increase_Value(slope_x_increase * slope_x_scale);
+    Slope_X.Set_Decrease_Value(SLOPE_X_DECREASE_BASE * slope_x_scale);
 
     // --- 2. 根据遥控器开关选择底盘控制模式 ---
     // set chassis control mod

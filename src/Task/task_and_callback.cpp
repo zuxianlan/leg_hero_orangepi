@@ -33,7 +33,7 @@ float rc_buffer[5][19] = {0};
 
 Robot robot;
 class_Timer timer_1ms;
-class_Timer timer_4ms;
+class_Timer timer_mpc;
 
 using Clock = std::chrono::high_resolution_clock; 
 using Duration = std::chrono::duration<double>; 
@@ -230,11 +230,11 @@ void TIM_1ms_PeriodElapsedCallback()
 }
 
 /**
- * @brief 4ms 周期回调：10 状态全状态线性 MPC
- *        周期必须与 Robot_MPC::Init(0.004) 的 dt 一致
+ * @brief MPC 周期回调（周期 MPC_CFG::DT = 8 ms）：10 状态全状态线性 MPC
+ *        定时器周期与 Robot_MPC::Init() 的 dt 共用 MPC_CFG::DT，保证一致
  *        锁在 MPC_Robot_Calc() 内部（只包数据拷贝），这里不加锁
  */
-void TIM_4ms_PeriodElapsedCallback()
+void TIM_MPC_PeriodElapsedCallback()
 {
     robot.Chassis.MPC_Robot_Calc();
 }
@@ -250,7 +250,7 @@ void Task_Init()
     // timer initialize
     timer_1ms.start(0.001, TIM_1ms_PeriodElapsedCallback);
 
-    timer_4ms.start(0.004, TIM_4ms_PeriodElapsedCallback);
+    timer_mpc.start(MPC_CFG::DT, TIM_MPC_PeriodElapsedCallback);
 
 
 }

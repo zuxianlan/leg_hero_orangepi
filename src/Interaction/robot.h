@@ -62,6 +62,14 @@
 #define MAX_Velocity 2.0f
 #define MAX_Velocity_Y 2.0f
 
+// Slope_X 步长随腿长缩放：取左右腿中较长的一条
+//   腿长 <= SLOPE_X_LEG_SHORT 时系数为 1（与原来的斜坡一致）
+//   腿长 >= SLOPE_X_LEG_LONG  时系数为 SLOPE_X_SCALE_LONG，中间线性插值
+#define SLOPE_X_LEG_SHORT       0.15f
+#define SLOPE_X_LEG_LONG        0.32f
+#define SLOPE_X_SCALE_LONG      0.30f //起步慢调大
+#define SLOPE_X_DECREASE_BASE   (1.0f / 600.0f)
+
 /* Variable && Struct --------------------------------------------------------*/
 
 typedef enum

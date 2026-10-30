@@ -10,11 +10,11 @@
   *  状态 e(10): [s, ds, phi, dphi, th_ll, dth_ll, th_lr, dth_lr, th_b, dth_b]
   *  控制 u(4) : [T_wl, T_wr, T_bl, T_br]   —— 与现 LQR 的 T[0..3] 一一对应
   *
-  *  每周期（4 ms）:
+  *  每周期（MPC_CFG::DT = 8 ms）:
   *      g = CtQ · Mp · e    ──>   QP   ──>   U(60)   ──>   只取前 4 个
   *
   *  腿长变化 >2 mm 或 100 ms 一次:
-  *      5x5 求 A_c,B_c -> 离散 A_d,B_d -> Riccati 得 F(=P),K
+  *      5x5 求 A_c,B_c -> ZOH 离散 A_d,B_d -> Riccati 得 F(=P),K
   *      -> condensing(Mp,Cp) -> H -> qp.init
   *
   *  注意: 本文件刻意不使用标识符 N，因为 Chassis.h 里已有 #define N 15。
@@ -35,11 +35,14 @@
 // ============================================================================
 namespace MPC_CFG
 {
+    // ---- 0) MPC 周期 [s]：定时器周期、模型离散步长、输出超时都由它决定 ----
+    constexpr double DT = 0.008;
+
     // ---- 1) 力矩盒约束 [T_wl, T_wr, T_bl, T_br]，单位 Nm ----
     constexpr double U_MIN[4] = {-15.0,  -15.0, -45.0, -45.0};
     constexpr double U_MAX[4] = { 15.0,   15.0,  45.0,  45.0};
 
-    // ---- 2) 力矩变化率，单位 Nm / 每步(=dt=4ms) ----
+    // ---- 2) 力矩变化率，单位 Nm / 每步(=DT) ----
     constexpr double DU[4] = {2.0, 2.0, 5.0, 5.0};
 
     // ---- 3) 摆角限幅随腿长线性变化（腿越长，允许摆角越小）----
@@ -56,7 +59,6 @@ namespace MPC_CFG
 
     // ---- 4b) 摆杆角速度限幅，单位 rad/s ----
     constexpr double DTHETA_MAX = 2.0;      // |dθ_ll|, |dθ_lr| 上限
-    constexpr double RATE_RELAX = 1.0;      // 角速度约束越界时的让开量 [rad/s]
 
     // ---- 5) 绝对速度约束（安全上限，必须 > 你的 MAX_Velocity）----
     constexpr bool   VEL_ABS_ON  = true;
@@ -70,8 +72,17 @@ namespace MPC_CFG
     constexpr bool   VEL_RATE_ON = true;
     constexpr double ACC_MAX     = 45.0;     // 模型尺度；≈3.3 m/s² 物理加速度
 
-    // ---- 7) 状态约束的越界让开量（防止初始已越界时 QP 不可行）----
-    constexpr double CON_RELAX = 0.05;       // rad
+    // ---- 7) 状态约束（3/4/4b）为软约束：每个约束一个松弛量 s >= 0，整个时域共用 ----
+    //   约束变为 lo - s <= x_k <= hi + s，代价加 W_LIN·s + ½·W_QUAD·s²
+    //   W_LIN  越大越接近硬约束（超过约束的对偶乘子时，能满足就一定满足）
+    //   W_QUAD 越大，越界后往回拉得越狠
+    //   s 的单位与被约束状态相同（摆角/俯仰 rad，角速度 rad/s）
+    constexpr double SOFT_W_LIN_THETA   = 1.0e4;   // θ_ll / θ_lr
+    constexpr double SOFT_W_QUAD_THETA  = 1.0e7;
+    constexpr double SOFT_W_LIN_PITCH   = 1.0e4;   // θ_b
+    constexpr double SOFT_W_QUAD_PITCH  = 1.0e7;
+    constexpr double SOFT_W_LIN_DTHETA  = 1.0e3;   // dθ_ll / dθ_lr
+    constexpr double SOFT_W_QUAD_DTHETA = 1.0e5;
 }
 
 class Robot_MPC
@@ -79,20 +90,29 @@ class Robot_MPC
 public:
     static constexpr int n  = 10;   // 状态个数
     static constexpr int p  = 4;    // 控制个数
-    static constexpr int NP = 15;   // 预测步数：15 * 4ms = 60ms
+    static constexpr int NP = 15;   // 预测步数：15 * 8ms = 120ms
 
-    // ===== 状态约束：{状态下标, 腿长来源, 下限, 上限} =====
+    // ===== 状态约束（软约束）：{状态下标, 腿长来源, 下限, 上限, 松弛线性权, 松弛二次权} =====
     //   leg = -1 → 用固定 lo/hi
     //   leg =  0 → 用左腿长算摆角限幅   leg = 1 → 用右腿长
-    struct ConState { int idx; int leg; double lo, hi; double relax; };
+    struct ConState { int idx; int leg; double lo, hi; double w_lin, w_quad; };
     static constexpr int NCON = 5;
     static constexpr ConState CON[NCON] = {
-        {4,  0, 0.0, 0.0, MPC_CFG::CON_RELAX},                              // θ_ll：随左腿长
-        {6,  1, 0.0, 0.0, MPC_CFG::CON_RELAX},                              // θ_lr：随右腿长
-        {8, -1, -MPC_CFG::PITCH_MAX, MPC_CFG::PITCH_MAX, MPC_CFG::CON_RELAX},// θ_b ：固定
-        {5, -1, -MPC_CFG::DTHETA_MAX, MPC_CFG::DTHETA_MAX, MPC_CFG::RATE_RELAX}, // dθ_ll
-        {7, -1, -MPC_CFG::DTHETA_MAX, MPC_CFG::DTHETA_MAX, MPC_CFG::RATE_RELAX}, // dθ_lr
+        {4,  0, 0.0, 0.0,
+         MPC_CFG::SOFT_W_LIN_THETA,  MPC_CFG::SOFT_W_QUAD_THETA},                    // θ_ll：随左腿长
+        {6,  1, 0.0, 0.0,
+         MPC_CFG::SOFT_W_LIN_THETA,  MPC_CFG::SOFT_W_QUAD_THETA},                    // θ_lr：随右腿长
+        {8, -1, -MPC_CFG::PITCH_MAX, MPC_CFG::PITCH_MAX,
+         MPC_CFG::SOFT_W_LIN_PITCH,  MPC_CFG::SOFT_W_QUAD_PITCH},                    // θ_b ：固定
+        {5, -1, -MPC_CFG::DTHETA_MAX, MPC_CFG::DTHETA_MAX,
+         MPC_CFG::SOFT_W_LIN_DTHETA, MPC_CFG::SOFT_W_QUAD_DTHETA},                   // dθ_ll
+        {7, -1, -MPC_CFG::DTHETA_MAX, MPC_CFG::DTHETA_MAX,
+         MPC_CFG::SOFT_W_LIN_DTHETA, MPC_CFG::SOFT_W_QUAD_DTHETA},                   // dθ_lr
     };
+
+    // ===== QP 决策变量：[U(NP*p) ; s(NCON)]，s 为每个状态约束的松弛量 =====
+    static constexpr int NU_QP = NP * p;            // 60：控制序列
+    static constexpr int NV_QP = NU_QP + NCON;      // 65：控制 + 松弛
 
     /// 腿长 -> 摆角限幅（线性插值）
     static double ThetaLimit(double L)
@@ -144,6 +164,7 @@ public:
     bool RebuildOK() const { return rebuild_ok; }   // 重建是否成功
     bool RiccatiOK() const { return riccati_ok; }   // Riccati 是否发散
     double StepDelta(int i) const { return u_step(i); }   // 本拍 u0 − 上一拍 [Nm]
+    double Slack(int c) const { return U(NU_QP + c); }    // 第 c 个状态约束的松弛量（>0 表示预测会越界）
 
 private:
     void Rebuild(double L_l, double L_r, bool cold);  // 重建模型 + H（cold=冷启动 DARE）
@@ -153,7 +174,7 @@ private:
     void Fill_Constraint_Am();              // 状态约束的矩阵行（随 Cp 变，Rebuild 里调）
     void Fill_Constraint_Bounds();          // 状态约束的上下界（随 e0 变，每周期调）
 
-    double dt = 0.004, age = 0.0;   // mpc控制周期，强制重建时间
+    double dt = MPC_CFG::DT, age = 0.0;   // mpc控制周期，强制重建时间
     double vref = 0.0;              // 当前参考速度（绝对速度约束用）
 
     Eigen::MatrixXd Ac, Bc;                 // 连续模型
@@ -162,7 +183,7 @@ private:
     Eigen::MatrixXd Qb, Rb;                 // 权重
     Eigen::MatrixXd CtQ, H;                 // 预存项 / Hessian
     Eigen::MatrixXd F, K, Q, R;             // 终端代价 / 增益 / 权重
-    Eigen::VectorXd g, Xfree, U;            // 斜率 / 自由响应 / 解
+    Eigen::VectorXd g, Xfree, U;            // 斜率 / 自由响应 / 解（g、U 含松弛量，长 NV_QP）
     Eigen::VectorXd u_step;                 // 本拍 u0 − 上一拍 [Nm]
     Eigen::VectorXd lb, ub, lbA, ubA;       // 上下限
     Eigen::VectorXd u_min, u_max, du;       // 力矩限幅 / 变化率限幅

@@ -89,7 +89,7 @@ public:
     // 10 状态全状态线性 MPC：替代 LQR 输出 T[0..3]（轮矩L/R + 髋矩L/R）
     std::unique_ptr<Robot_MPC> mpc_robot;
     bool mpc_enable = true;      // ★ 调试开关：false = 完全退回原 LQR
-    float mpc_timeout = 0.008f;  // 输出新鲜度上限 [s]：超过 8 ms（2 个 MPC 周期）未更新就退回 LQR
+    float mpc_timeout = static_cast<float>(2.0 * MPC_CFG::DT);  // 输出新鲜度上限 [s]：超过 2 个 MPC 周期未更新就退回 LQR
 
     Enum_chassis_fsm_mode chassis_fsm_mode;
     Enum_up_staris_fsm_mode chassis_up_fsm_mode;
@@ -112,7 +112,7 @@ public:
     void Slip_Detection_And_Suppression();
     void MPC_Body_Calc();
     void LQR_Calc();
-    void MPC_Robot_Calc();          // 4ms 任务调用：10 状态 MPC 求解一次
+    void MPC_Robot_Calc();          // MPC 任务调用（周期 MPC_CFG::DT）：10 状态 MPC 求解一次
 
     inline void Set_Target_X(float __Target_X)                         { Target_X = __Target_X; }
     inline void Set_Target_Velocity(float __Target_Velocity)           { Target_Velocity = __Target_Velocity; }

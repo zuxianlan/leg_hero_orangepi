@@ -9,11 +9,12 @@
   *  实现思路（按顺序读）：
   *    Init()     : 分配矩阵、设 Q/R/限幅、建一次模型
   *    BuildAB()  : 腿长 -> 5x5 牛顿方程 -> Ac(10x10), Bc(10x4)
-  *    Rebuild()  : Ac,Bc -> Ad,Bd -> F(=P),K -> Mp,Cp -> H -> qp.init
+  *    Rebuild()  : Ac,Bc -> (ZOH) Ad,Bd -> F(=P),K -> Mp,Cp -> H -> qp.init
   *    Run()      : 每周期：判重建 -> g -> 边界 -> QP -> 取 U 前 4 个
   ******************************************************************************
   */
 #include "Robot_MPC.h"
+#include <unsupported/Eigen/MatrixFunctions>   // 矩阵指数，ZOH 离散化用
 #include <cmath>
 #include <algorithm>
 
@@ -93,14 +94,15 @@ bool Dare(const Eigen::MatrixXd& A, const Eigen::MatrixXd& B,
 
 /**
  * @brief  上电初始化：分配全部矩阵、设置 Q/R/限幅/状态约束、建一次模型并冷启动 DARE
- * @param  dt_  离散步长 [s]，必须等于 4 ms 任务的实际周期（当前 0.004）
+ * @param  dt_  离散步长 [s]，必须等于 MPC 任务的实际周期（MPC_CFG::DT）
  * @return 无
  */
 void Robot_MPC::Init(double dt_)
 {
     dt = dt_;
     const int nX = (NP + 1) * n;   // 160：未来 0..15 步的状态
-    const int nU = NP * p;         // 60 ：未来 15 步的控制
+    const int nU = NU_QP;          // 60 ：未来 15 步的控制
+    const int nV = NV_QP;          // 65 ：QP 决策变量 = 控制 + 松弛
     const int nC = NROW_ALL;                 // 行数由头文件 MPC_CFG 自动决定
 
     Ac = Eigen::MatrixXd::Zero(n, n);
@@ -112,13 +114,13 @@ void Robot_MPC::Init(double dt_)
     Qb = Eigen::MatrixXd::Zero(nX, nX);
     Rb = Eigen::MatrixXd::Zero(nU, nU);
     CtQ = Eigen::MatrixXd::Zero(nU, nX);
-    H  = Eigen::MatrixXd::Zero(nU, nU);
+    H  = Eigen::MatrixXd::Zero(nV, nV);
 
-    g = Eigen::VectorXd::Zero(nU);
+    g = Eigen::VectorXd::Zero(nV);
     Xfree = Eigen::VectorXd::Zero(nX);
-    lb = ub = U = Eigen::VectorXd::Zero(nU);
+    lb = ub = U = Eigen::VectorXd::Zero(nV);
     lbA = ubA = Eigen::VectorXd::Zero(nC);
-    Am.setZero(nC, nU);
+    Am.setZero(nC, nV);
 
     // 权重：直接沿用 LQR 的 Q、R（顺序见头文件）
     Q = Eigen::MatrixXd::Zero(n, n);
@@ -129,17 +131,17 @@ void Robot_MPC::Init(double dt_)
     F = Q;                                  // 占位，Rebuild 里会被 Riccati 的 P 覆盖
     K = Eigen::MatrixXd::Zero(p, n);
 
-    // 力矩限幅与变化率限幅（★上线前按实测峰值修改★）
-    u_min.resize(p); u_min << -15.0, -15.0, -45.0, -45.0;   // [T_wl, T_wr, T_bl, T_br]
-    u_max.resize(p); u_max <<  15.0,  15.0,  45.0,  45.0;
-    // du = 每个预测步(4ms)允许的力矩变化量，即速率限制：
-    du.resize(p);    du    <<   2.0,   2.0,   8.0,   8.0;   // Nm / 每步(4ms)
+    // 力矩限幅与变化率限幅：统一取自头文件 MPC_CFG（只改那里）
+    u_min = Eigen::Map<const Eigen::VectorXd>(MPC_CFG::U_MIN, p);   // [T_wl, T_wr, T_bl, T_br]
+    u_max = Eigen::Map<const Eigen::VectorXd>(MPC_CFG::U_MAX, p);
+    // du = 每个预测步(dt)允许的力矩变化量，即速率限制：
+    du    = Eigen::Map<const Eigen::VectorXd>(MPC_CFG::DU, p);      // Nm / 每步
 
     e0.setZero();
     u_last.setZero();
     u_step = Eigen::VectorXd::Zero(p);
 
-    qp = std::make_unique<qpOASES::SQProblem>(nU, nC);
+    qp = std::make_unique<qpOASES::SQProblem>(nV, nC);
     qpOASES::Options o;
     o.printLevel = qpOASES::PL_NONE;        // 实机不要打印，会卡实时
     qp->setOptions(o);
@@ -228,7 +230,7 @@ void Robot_MPC::BuildAB(double Ll, double Lr)
 }
 
 /**
- * @brief  重建模型 + 代价矩阵：离散化 → DARE(F=P,K) → condensing → H → 约束矩阵
+ * @brief  重建模型 + 代价矩阵：ZOH 离散化 → DARE(F=P,K) → condensing → H → 约束矩阵
  *         只在腿长变化 >2 mm 或 100 ms 未更新时执行（约 0.3~0.8 ms）
  * @param  Ll    左腿长 [m]
  * @param  Lr    右腿长 [m]
@@ -240,9 +242,14 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
 {
     BuildAB(Ll, Lr);                                        // ① 腿长 -> Ac,Bc
 
-    const Eigen::MatrixXd Adt = Ac * dt;
-    Ad = Eigen::MatrixXd::Identity(n, n) + Adt + 0.5 * Adt * Adt;
-    Bd = (Eigen::MatrixXd::Identity(n, n) * dt + 0.5 * Adt * dt) * Bc;
+    // ② 精确 ZOH 离散化：exp([Ac Bc; 0 0]·dt) = [Ad Bd; 0 I]
+    //    力矩在一个 MPC 周期内保持不变，正是零阶保持的假设
+    Eigen::MatrixXd Mx = Eigen::MatrixXd::Zero(n + p, n + p);
+    Mx.topLeftCorner(n, n)  = Ac;
+    Mx.topRightCorner(n, p) = Bc;
+    const Eigen::MatrixXd Ez = (Mx * dt).exp();
+    Ad = Ez.topLeftCorner(n, n);
+    Bd = Ez.topRightCorner(n, p);
 
     // ③ Riccati -> F(=P) 终端代价，同时得到兜底增益 K
     riccati_ok = Dare(Ad, Bd, Q, R, F, K, cold ? 3000 : 40);   // 冷启动收敛 / 热启动跟踪
@@ -273,7 +280,11 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
         for (int i = 0; i < n; ++i)
             CtQ.col(k*n + i) *= Q(i,i);
     CtQ.middleCols(NP*n, n) = Cp.middleRows(NP*n, n).transpose() * F;
-    H = CtQ * Cp + Rb;
+
+    // H = [ C'QC+R   0 ;  0  diag(W_QUAD) ]：松弛量只有自身的二次罚，与 U 不耦合
+    H.setZero();
+    H.topLeftCorner(NU_QP, NU_QP) = CtQ * Cp + Rb;
+    for (int c = 0; c < NCON; ++c) H(NU_QP + c, NU_QP + c) = CON[c].w_quad;
 
     // ⑦ Δu 约束矩阵（常数）：|u_k - u_{k-1}| <= du
     Am.setZero();
@@ -311,8 +322,10 @@ void Robot_MPC::Rebuild(double Ll, double Lr, bool cold)
  */
 void Robot_MPC::BuildGradient()
 {
-    Xfree.noalias() = Mp * e0;        // 不出力时未来 16 步的状态
-    g.noalias()     = CtQ * Xfree;    // 代价对 U 的斜率
+    Xfree.noalias() = Mp * e0;                    // 不出力时未来 16 步的状态
+    g.head(NU_QP).noalias() = CtQ * Xfree;        // 代价对 U 的斜率
+    for (int c = 0; c < NCON; ++c)                // 松弛量的线性罚
+        g(NU_QP + c) = CON[c].w_lin;
 }
 
 /**
@@ -326,6 +339,9 @@ void Robot_MPC::SetBounds()
         lb.segment(k*p, p) = u_min;
         ub.segment(k*p, p) = u_max;
     }
+    // 松弛量 s >= 0，无上界
+    lb.tail(NCON).setZero();
+    ub.tail(NCON).setConstant(1e20);
 
     // Δu 限幅：先全部放开下界，只填上界
     lbA.setConstant(-1e20);
@@ -354,12 +370,16 @@ void Robot_MPC::Fill_Constraint_Am()
 {
     int r = NROW_DU;                     // 前 NROW_DU 行是 Δu，已在 Rebuild() 里填好
 
-    // ---- ① 绝对状态约束（θ 随腿长、θ_b 固定）----
+    // ---- ① 绝对状态约束（软约束，θ 随腿长、θ_b 固定）----
+    //   上界行： Cp_k·U − s_c ≤  hi − m
+    //   下界行：−Cp_k·U − s_c ≤ −lo + m
     for (int c = 0; c < NCON; ++c)
         for (int k = 1; k <= NP; ++k) {
             const int src = k * n + CON[c].idx;
-            Am.row(r)     =  Cp.row(src);
-            Am.row(r + 1) = -Cp.row(src);
+            Am.row(r).head(NU_QP)     =  Cp.row(src);
+            Am.row(r + 1).head(NU_QP) = -Cp.row(src);
+            Am(r,     NU_QP + c) = -1.0;
+            Am(r + 1, NU_QP + c) = -1.0;
             r += 2;
         }
 
@@ -367,8 +387,8 @@ void Robot_MPC::Fill_Constraint_Am()
     if constexpr (MPC_CFG::VEL_ABS_ON) {
         for (int k = 1; k <= NP; ++k) {
             const int src = k * n + 1;                 // 状态 1 = ds
-            Am.row(r)     =  Cp.row(src);
-            Am.row(r + 1) = -Cp.row(src);
+            Am.row(r).head(NU_QP)     =  Cp.row(src);
+            Am.row(r + 1).head(NU_QP) = -Cp.row(src);
             r += 2;
         }
     }
@@ -376,8 +396,8 @@ void Robot_MPC::Fill_Constraint_Am()
     // ---- ③ 加速度约束 |v_k - v_{k-1}| <= ACC_MAX·dt ----
     if constexpr (MPC_CFG::VEL_RATE_ON) {
         for (int k = 1; k <= NP; ++k) {
-            Am.row(r)     =  Cp.row(k*n + 1) - Cp.row((k-1)*n + 1);
-            Am.row(r + 1) = -Am.row(r);
+            Am.row(r).head(NU_QP)     =  Cp.row(k*n + 1) - Cp.row((k-1)*n + 1);
+            Am.row(r + 1).head(NU_QP) = -Am.row(r).head(NU_QP);
             r += 2;
         }
     }
@@ -394,7 +414,7 @@ void Robot_MPC::Fill_Constraint_Bounds()
 {
     int r = NROW_DU;
 
-    // ---- ① 绝对状态约束 ----
+    // ---- ① 绝对状态约束（软约束：边界固定不随 e0 放宽，越界由松弛量 s 吸收并受罚）----
     for (int c = 0; c < NCON; ++c) {
         double lo = CON[c].lo, hi = CON[c].hi;
         if (CON[c].leg >= 0) {                     // 摆角：按对应腿长算限幅
@@ -402,9 +422,6 @@ void Robot_MPC::Fill_Constraint_Bounds()
             lo = -lim;
             hi =  lim;
         }
-        const double x0 = e0(CON[c].idx);
-        lo = std::min(lo, x0 - CON[c].relax);         // 已越界时让开，保证可行
-        hi = std::max(hi, x0 + CON[c].relax);
 
         for (int k = 1; k <= NP; ++k) {
             const double m = Xfree(k*n + CON[c].idx);

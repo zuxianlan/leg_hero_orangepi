@@ -83,9 +83,9 @@ void class_Chassis::Init()
     MPC_body.MPC_Init();
 
     /******************* 10 状态 MPC *******************/
-    // dt 必须等于 TIM_4ms 的实际周期（0.004 s）
+    // dt 必须等于 MPC 任务的实际周期（MPC_CFG::DT）
     mpc_robot = std::make_unique<Robot_MPC>();
-    mpc_robot->Init(0.004);
+    mpc_robot->Init(MPC_CFG::DT);
 
 }
 
@@ -221,10 +221,10 @@ void class_Chassis::Follow_Gimbal_Control()
     }
     LQR_Calc();
 
-    // ===== 10 状态 MPC 接管（若 4ms 任务已算出有效解）=====
+    // ===== 10 状态 MPC 接管（若 MPC 任务已算出有效解）=====
     // 条件与 LQR 的正常分支一致：不在腾空、不在小陀螺
     // 轮矩仍乘打滑系数；髋矩直接使用 MPC 结果
-    // 且要求解是「新鲜」的（8 ms 内），防止 4 ms 线程卡住时一直复用旧解
+    // 且要求解是「新鲜」的（2 个 MPC 周期内），防止 MPC 线程卡住时一直复用旧解
     mpc_applied = (mpc_enable && MPC_Output_Fresh() && !spin_mode && chassis_fsm_mode != ABOVE_GROUND);
     if (mpc_applied)
     {
@@ -786,10 +786,10 @@ void class_Chassis::LQR_Calc()
 }
 
 /**
- * @brief 10 状态 MPC 计算（4 ms 任务调用，输出 T_mpc[4] / mpc_ok）
+ * @brief 10 状态 MPC 计算（MPC 任务每 MPC_CFG::DT 调用一次，输出 T_mpc[4] / mpc_ok）
  *
  * 为什么锁要在函数内部：
- *   TIM_4ms 与 TIM_1ms/2ms 是两个线程，共用 mc_02->rx_mutex。
+ *   TIM_MPC 与 TIM_1ms 是两个线程，共用 mc_02->rx_mutex。
  *   Run() 内部可能触发 0.3~0.8 ms 的模型重建，如果像其他任务那样
  *   在回调最外层加锁，1 kHz 任务会被堵这么久。所以这里只锁两次
  *   「数据拷贝」的瞬间，求解全程不持锁。
