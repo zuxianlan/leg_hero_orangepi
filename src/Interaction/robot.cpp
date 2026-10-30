@@ -803,14 +803,10 @@ void Robot::Self_Rescue()
 
 void Robot::Check_over_turn_mod()
 {
-    // �趨�ٶ�
     Target_Velocity = 0.0f;
     Target_X = 0.0f;
-    // �趨ת��
     Target_Omega = 0.0f;
-    // �趨�����?
     Target_Roll = 0.0f;
-    // �趨theta_err
     Target_Theta = 0.0f;
     Target_height = 0.1;
     if(Chassis.left_leg.Get_theta() < -0.9 || Chassis.left_leg.Get_theta() > 1.4)

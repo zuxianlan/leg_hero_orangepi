@@ -16,6 +16,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <cerrno>
+#include <cstdint>
 /* Define --------------------------------------------------------------------*/
 #define byte0(dw_temp)     (*(char*)(&dw_temp))
 #define byte1(dw_temp)     (*((char*)(&dw_temp) + 1))
@@ -51,6 +53,9 @@ typedef struct
   float v19;
 }SEND_Message;
 
+// Start() 按整块内存拷贝 send_message，要求 20 个 float 紧密排列
+static_assert(sizeof(SEND_Message) == 20 * sizeof(float), "SEND_Message must be 20 packed floats");
+
 class Class_Vofa_TCP
 {
   public:
@@ -60,12 +65,14 @@ class Class_Vofa_TCP
 
   void Start();
 
+  void Close();
+
   void Send(uint8_t num, float data);
 
   void sendframetail();
 
   private:
-  int client_fd = 0;
+  int client_fd = -1;   // -1 = 未连接
   int cnt = 0;
   uint8_t Buffer[256] = {0};
 

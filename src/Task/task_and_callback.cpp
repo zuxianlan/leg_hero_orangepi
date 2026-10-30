@@ -33,7 +33,6 @@ float rc_buffer[5][19] = {0};
 
 Robot robot;
 class_Timer timer_1ms;
-class_Timer timer_2ms;
 class_Timer timer_4ms;
 
 using Clock = std::chrono::high_resolution_clock; 
@@ -190,29 +189,21 @@ void mc02_send_data()
 }
 
 /**
- * @brief 1ms周期回调函数 用于更新INS和底盘卡尔曼滤波
- * 
+ * @brief 1ms周期回调函数 用于INS、底盘卡尔曼滤波、底盘控制和状态更新
+ *        原来的 1ms / 2ms 两个回调合并到同一线程，保证每拍固定按
+ *        INS -> 观测 -> 控制 -> 下发 的顺序执行
  */
 void TIM_1ms_PeriodElapsedCallback()
 {
-    std::lock_guard<std::mutex> lock(robot.mc02_SerialPort.rx_mutex);
-
-    robot.INS.INS_Update(robot.mc02_SerialPort.Rx_Data);
-
-    robot.Chassis.Self_Observe();
-}
-
-/**
- * @brief 1ms周期回调函数 用于底盘控制和状态更新
- * 
- */
-void TIM_2ms_PeriodElapsedCallback()
-{
     // 记录回调起始时间，用于性能测量
-    auto start = std::chrono::high_resolution_clock::now(); 
+    auto start = std::chrono::high_resolution_clock::now();
     {
         // 加锁保护串口接收缓冲区，防止与串口接收中断产生竞争
         std::lock_guard<std::mutex> lock(robot.mc02_SerialPort.rx_mutex);
+
+        robot.INS.INS_Update(robot.mc02_SerialPort.Rx_Data);
+        robot.Chassis.Self_Observe();
+
         robot.FSM_Chassis.TIM_1ms_Calculate_PeriodElapsedCallback();
         robot.Jump_Control();
         robot.UP_staris_Control();
@@ -222,10 +213,13 @@ void TIM_2ms_PeriodElapsedCallback()
         {
             robot.Chassis.Ground_Detection();
         }
-        Vofa_start();
+        Vofa_start();   // 锁内只填数据
     }
     // 发送MC02串口数据
     mc02_send_data();
+
+    // Vofa 发送放在锁外，网络卡顿不影响串口接收
+    robot.Vofa_TCP.Start();
 
     // 计算并输出本轮回调耗时（微秒）
     // auto stop = std::chrono::high_resolution_clock::now();  
@@ -255,8 +249,6 @@ void Task_Init()
 
     // timer initialize
     timer_1ms.start(0.001, TIM_1ms_PeriodElapsedCallback);
-
-    timer_2ms.start(0.001, TIM_2ms_PeriodElapsedCallback);
 
     timer_4ms.start(0.004, TIM_4ms_PeriodElapsedCallback);
 
@@ -361,7 +353,6 @@ void Vofa_start()
     robot.Vofa_TCP.send_message.v9 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
     robot.Vofa_TCP.send_message.v10 = robot.Chassis.Get_mpc_rebuild_ok() ? 1.0f : 0.0f;
     robot.Vofa_TCP.send_message.v11 = robot.Chassis.Get_mpc_riccati_ok() ? 1.0f : 0.0f;
-    robot.Vofa_TCP.Start();
 }
 
 float get_mahony_pitch()

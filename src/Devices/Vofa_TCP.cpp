@@ -10,6 +10,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "Vofa_TCP.h"
+#include <cstring>
+#include <netinet/tcp.h>
 /* Define --------------------------------------------------------------------*/
 
 /* Variable && Struct --------------------------------------------------------*/
@@ -25,6 +27,7 @@ void Class_Vofa_TCP::Init(const char* port_name, int Port)
     if (client_fd < 0)
     {
         std::cerr << "Socket creation failed" << std::endl;
+        return;
     }
 
     // 2. 配置服务器地址
@@ -34,49 +37,52 @@ void Class_Vofa_TCP::Init(const char* port_name, int Port)
     if (inet_pton(AF_INET, port_name, &server_addr.sin_addr) <= 0)
     {
         std::cerr << "Invalid address" << std::endl;
+        Close();
+        return;
     }
 
-    // 3. 连接到 PlotJuggler 服务器
+    // 3. 连接到 Vofa 服务器
     if (connect(client_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0)
     {
         std::cerr << "Connection failed (ensure server opened)" << std::endl;
+        Close();
+        return;
+    }
+
+    // 4. 关闭 Nagle：每帧立即发出，曲线不会成批跳动
+    int flag = 1;
+    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+}
+
+void Class_Vofa_TCP::Close()
+{
+    if (client_fd >= 0)
+    {
+        close(client_fd);
+        client_fd = -1;
     }
 }
 
 void Class_Vofa_TCP::Start()
 {
-    Send(0, send_message.v0);
-    Send(1, send_message.v1);
-    Send(2, send_message.v2);
-    Send(3, send_message.v3);
-    Send(4, send_message.v4);
-    Send(5, send_message.v5);
-    Send(6, send_message.v6);
-    Send(7, send_message.v7);
-    Send(8, send_message.v8);
-    Send(9, send_message.v9);
-    Send(10, send_message.v10);
-    Send(11, send_message.v11);
-    Send(12, send_message.v12);
-    Send(13, send_message.v13);
-    Send(14, send_message.v14);
-    Send(15, send_message.v15);
-    Send(16, send_message.v16);
-    Send(17, send_message.v17);
-    Send(18, send_message.v18);
-    Send(19, send_message.v19);
+    // 未连接时直接返回，不打包也不发送
+    if (client_fd < 0)
+    {
+        return;
+    }
+
+    // SEND_Message 是 20 个连续 float，整块拷贝即为 JustFloat 数据段
+    std::memcpy(Buffer, &send_message, sizeof(send_message));
+    cnt = sizeof(send_message);
 
     // Call the function to send the frame tail
     sendframetail();
-
 }
 
 void Class_Vofa_TCP::Send(uint8_t num, float data)
 {
-    Buffer[cnt++] = byte0(data);
-    Buffer[cnt++] = byte1(data);
-    Buffer[cnt++] = byte2(data);
-    Buffer[cnt++] = byte3(data);
+    std::memcpy(&Buffer[cnt], &data, sizeof(data));
+    cnt += sizeof(data);
 }
 
 void Class_Vofa_TCP::sendframetail()
@@ -86,6 +92,15 @@ void Class_Vofa_TCP::sendframetail()
     Buffer[cnt++] = 0x80;
     Buffer[cnt++] = 0x7f;
 
-    send(client_fd, Buffer, cnt, 0);
+    // MSG_DONTWAIT：发送缓冲区满时丢掉本帧，不阻塞控制线程
+    // MSG_NOSIGNAL：上位机断开时不触发 SIGPIPE（默认会直接杀掉进程）
+    const ssize_t ret = send(client_fd, Buffer, cnt, MSG_DONTWAIT | MSG_NOSIGNAL);
     cnt = 0;
+
+    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+        // 连接已断开：关闭 socket，后续帧不再发送
+        std::cerr << "Vofa connection lost" << std::endl;
+        Close();
+    }
 }
