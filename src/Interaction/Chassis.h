@@ -89,6 +89,7 @@ public:
     // 10 状态全状态线性 MPC：替代 LQR 输出 T[0..3]（轮矩L/R + 髋矩L/R）
     std::unique_ptr<Robot_MPC> mpc_robot;
     bool mpc_enable = true;      // ★ 调试开关：false = 完全退回原 LQR
+    bool mpc_spin_enable = true; // ★ 调试开关：false = 小陀螺时仍用 LQR 小陀螺分支（MPC 小陀螺权重调试期间用来 A/B）
     float mpc_timeout = static_cast<float>(2.0 * MPC_CFG::DT);  // 输出新鲜度上限 [s]：超过 2 个 MPC 周期未更新就退回 LQR
 
     Enum_chassis_fsm_mode chassis_fsm_mode;
@@ -151,11 +152,11 @@ public:
     inline float Get_a_filter()                                        { return kf.x_hat(1); } 
 
     /**
-     * @brief MPC 输出是否仍可用：求解成功 **且** 距今不超过 mpc_timeout。
+     * @brief MPC 输出是否仍可用：输出有效（QP 解或可信的 Fallback）**且** 距今不超过 mpc_timeout。
      */
     inline bool MPC_Output_Fresh() const
     {
-        if (!mpc_ok) { return false; }
+        if (!mpc_valid) { return false; }
         const std::chrono::duration<double> d =
                 std::chrono::steady_clock::now() - mpc_stamp;
         return d.count() <= static_cast<double>(mpc_timeout);
@@ -214,7 +215,8 @@ private:
 
     float T[4] = {};
     float T_mpc[4] = {};         // MPC 输出：[T_wl, T_wr, T_bl, T_br]
-    bool  mpc_ok = false;        // MPC 本周期的结果是否可用
+    bool  mpc_ok = false;        // QP 本周期是否求解成功（遥测用；false 时 T_mpc 可能是 Fallback）
+    bool  mpc_valid = false;     // T_mpc 能否下发：QP 成功，或 QP 失败但 Fallback 可信
     bool  mpc_applied = false;   // 本拍是否真的采用 MPC 结果
     std::chrono::steady_clock::time_point mpc_stamp{};   // 最后一次 MPC 求解完成的时刻
     float mpc_u_hist[4] = {};    // 上一拍实际生效的通道命令（MPC 决策变量量纲）

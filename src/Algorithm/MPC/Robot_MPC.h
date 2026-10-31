@@ -60,19 +60,7 @@ namespace MPC_CFG
     // ---- 4b) 摆杆角速度限幅，单位 rad/s ----
     constexpr double DTHETA_MAX = 2.0;      // |dθ_ll|, |dθ_lr| 上限
 
-    // ---- 5) 绝对速度约束（安全上限，必须 > 你的 MAX_Velocity）----
-    constexpr bool   VEL_ABS_ON  = true;
-    constexpr double VEL_ABS_MAX = 2.5;      // m/s，略大于 MAX_Velocity(=2)
-
-    // ---- 6) 加速度约束（相邻步速度变化率）----
-    //   ★注意单位★ 这里限的是模型里的 ds̈，不是整车的物理加速度：
-    //   模型 B(1,:) 给出「2 个轮子各 1 Nm → ds̈ ≈ 11 m/s²」，
-    //   而按整车质量算的物理值只有 2/(r·m) ≈ 0.81 m/s²/Nm，两者差约 13.6 倍。
-    //   所以：想要「物理加速度 3.3 m/s²」→ ACC_MAX ≈ 45。
-    constexpr bool   VEL_RATE_ON = true;
-    constexpr double ACC_MAX     = 45.0;     // 模型尺度；≈3.3 m/s² 物理加速度
-
-    // ---- 7) 状态约束（3/4/4b）为软约束：每个约束一个松弛量 s >= 0，整个时域共用 ----
+    // ---- 5) 状态约束（3/4/4b）为软约束：每个约束一个松弛量 s >= 0，整个时域共用 ----
     //   约束变为 lo - s <= x_k <= hi + s，代价加 W_LIN·s + ½·W_QUAD·s²
     //   W_LIN  越大越接近硬约束（超过约束的对偶乘子时，能满足就一定满足）
     //   W_QUAD 越大，越界后往回拉得越狠
@@ -83,6 +71,17 @@ namespace MPC_CFG
     constexpr double SOFT_W_QUAD_PITCH  = 1.0e7;
     constexpr double SOFT_W_LIN_DTHETA  = 1.0e3;   // dθ_ll / dθ_lr
     constexpr double SOFT_W_QUAD_DTHETA = 1.0e5;
+
+    // ---- 6) 状态权重 Q 的对角线 [s, ds, phi, dphi, th_ll, dth_ll, th_lr, dth_lr, th_b, dth_b] ----
+    //   普通模式：沿用 LQR 的 Q。
+    constexpr double Q_NORMAL[10] = {6000, 90, 30000, 1500, 19000, 300, 19000, 300, 600000, 500};
+    //   小陀螺模式：对应原 LQR 小陀螺分支的手调增益
+    //     - s、phi 不再保持（原分支把 err[0]、err[2] 的增益置 0）。取 1 而不是 0：
+    //       s、phi 是纯积分模态，权重为 0 会让 Riccati 在单位圆上不适定。
+    //     - 腿角/腿角速度 ×0.9/×0.95 增益 → Q 约 ×0.81/×0.90
+    //     - 俯仰/俯仰角速度 ×3.0/×1.4 增益 → Q 约 ×9/×1.96（增益 ∝ √Q）
+    //   这是起点，实机再调。
+    constexpr double Q_SPIN[10]   = {1, 90, 1, 1500, 15400, 270, 15400, 270, 5.4e6, 980};
 }
 
 class Robot_MPC
@@ -125,20 +124,28 @@ public:
     // ===== 各类约束占用的行数（Init 里用来算 nC）=====
     static constexpr int NROW_DU    = 2 * NP * p;                     // Δu
     static constexpr int NROW_CON   = 2 * NP * NCON;                  // 绝对状态
-    static constexpr int NROW_VABS  = MPC_CFG::VEL_ABS_ON  ? 2 * NP : 0;  // 绝对速度
-    static constexpr int NROW_VRATE = MPC_CFG::VEL_RATE_ON ? 2 * NP : 0;  // 加速度
-    static constexpr int NROW_ALL   = NROW_DU + NROW_CON + NROW_VABS + NROW_VRATE;
+    static constexpr int NROW_ALL   = NROW_DU + NROW_CON;
 
     using VecX = Eigen::Matrix<double, n, 1>;
     using VecU = Eigen::Matrix<double, p, 1>;
 
     void Init(double dt);
 
-    bool Run(const VecX& err, double L_l, double L_r, VecU& u,
-             double v_ref = 0.0);
+    /**
+     * @brief 切换普通 / 小陀螺权重。只能和 Run() 在同一个线程调用。
+     *        模式变化后，下一次 Run() 会换 Q 并冷启动重算 Riccati（上电外唯一一次几 ms 的重建）。
+     */
+    void SetSpinMode(bool spin)
+    {
+        if (spin != spin_mode) { spin_mode = spin; mode_dirty = true; }
+    }
+
+    bool Run(const VecX& err, double L_l, double L_r, VecU& u);
 
     /**
-     * @brief  LQR 兜底：u = -K·e，再等比缩放到与 MPC 相同的力矩限幅
+     * @brief  QP 失败时的兜底：u = -K·e，再等比缩放到与 MPC 相同的力矩限幅。
+     *         K 来自当前 Q/R/腿长下的 Riccati；不含 Δu 与状态约束。
+     *         只有 RebuildOK() 为 true 时 K 才可信。
      */
     VecU Fallback(const VecX& err) const
     {
@@ -175,7 +182,6 @@ private:
     void Fill_Constraint_Bounds();          // 状态约束的上下界（随 e0 变，每周期调）
 
     double dt = MPC_CFG::DT, age = 0.0;   // mpc控制周期，强制重建时间
-    double vref = 0.0;              // 当前参考速度（绝对速度约束用）
 
     Eigen::MatrixXd Ac, Bc;                 // 连续模型
     Eigen::MatrixXd Ad, Bd;                 // 离散模型
@@ -197,6 +203,7 @@ private:
 
     std::unique_ptr<qpOASES::SQProblem> qp;  // H 会变 -> SQProblem
     bool ready = false, solver_inited = false, ok = false;
+    bool spin_mode = false, mode_dirty = false;   // 当前权重模式 / 需要换 Q 并冷启动重建
     bool rebuild_ok = false;   // 最近一次 Rebuild 的数据是否有效（有限 + Riccati 未发散）
     bool riccati_ok = false;   // Dare 是否正常返回
     int  wsr = 0; // QP 迭代计数器

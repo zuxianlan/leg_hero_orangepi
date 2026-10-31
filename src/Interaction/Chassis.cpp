@@ -222,14 +222,15 @@ void class_Chassis::Follow_Gimbal_Control()
     LQR_Calc();
 
     // ===== 10 状态 MPC 接管（若 MPC 任务已算出有效解）=====
-    // 条件与 LQR 的正常分支一致：不在腾空、不在小陀螺
-    // 轮矩仍乘打滑系数；髋矩直接使用 MPC 结果
+    // 条件：不在腾空；小陀螺时还要 mpc_spin_enable（MPC 内部已切到小陀螺权重）
+    // 轮矩乘打滑系数（小陀螺时打滑检测关闭，系数取 1，与 LQR 小陀螺分支一致）；髋矩直接使用 MPC 结果
     // 且要求解是「新鲜」的（2 个 MPC 周期内），防止 MPC 线程卡住时一直复用旧解
-    mpc_applied = (mpc_enable && MPC_Output_Fresh() && !spin_mode && chassis_fsm_mode != ABOVE_GROUND);
+    mpc_applied = (mpc_enable && (!spin_mode || mpc_spin_enable)
+                   && MPC_Output_Fresh() && chassis_fsm_mode != ABOVE_GROUND);
     if (mpc_applied)
     {
-        T[0] = T_mpc[0] * slip_factor_l;
-        T[1] = T_mpc[1] * slip_factor_r;
+        T[0] = T_mpc[0] * (spin_mode ? 1.0f : slip_factor_l);
+        T[1] = T_mpc[1] * (spin_mode ? 1.0f : slip_factor_r);
         T[2] = T_mpc[2];
         T[3] = T_mpc[3];
     }
@@ -786,7 +787,7 @@ void class_Chassis::LQR_Calc()
 }
 
 /**
- * @brief 10 状态 MPC 计算（MPC 任务每 MPC_CFG::DT 调用一次，输出 T_mpc[4] / mpc_ok）
+ * @brief 10 状态 MPC 计算（MPC 任务每 MPC_CFG::DT 调用一次，输出 T_mpc[4] / mpc_ok / mpc_valid）
  *
  * 为什么锁要在函数内部：
  *   TIM_MPC 与 TIM_1ms 是两个线程，共用 mc_02->rx_mutex。
@@ -799,11 +800,13 @@ void class_Chassis::MPC_Robot_Calc()
     Robot_MPC::VecX e;
     Robot_MPC::VecU u_last;
     double Ll, Lr;
+    bool spin;
 
     // ---------- 锁内：只拷贝数据 ----------
     {
         std::lock_guard<std::mutex> lock(mc_02->rx_mutex);
         for (int i = 0; i < 10; ++i) e(i) = static_cast<double>(err[i]);
+        spin = spin_mode;
         Ll = static_cast<double>(left_leg.Get_L0());
         Lr = static_cast<double>(right_leg.Get_L0());
         // 历史取「上一拍实际生效的通道命令」，不是 T_mpc：MPC 在 LQR 接管/打滑缩放
@@ -812,16 +815,28 @@ void class_Chassis::MPC_Robot_Calc()
     }   // ← 自动解锁
 
     // ---------- 锁外：求解（可能重建模型）----------
+    // 小陀螺不保位置/偏航角（与 LQR 小陀螺分支把 err[0]、err[2] 增益置 0 一致）
+    if (spin) { e(0) = 0.0; e(2) = 0.0; }
+    mpc_robot->SetSpinMode(spin);
+
     Robot_MPC::VecU u;
     mpc_robot->SetLastControl(u_last);
-    bool ok = mpc_robot->Run(e, Ll, Lr, u, static_cast<double>(Target_Velocity));
-    if (!ok) u = mpc_robot->Fallback(e);      // QP 失败 -> LQR 兜底（已含等比限幅）
+    const bool ok = mpc_robot->Run(e, Ll, Lr, u);
+    // QP 失败 -> 下发 Fallback（-K·e 并等比限幅）。
+    // 只有 K 可信（Riccati 正常、矩阵有限）且结果有限时才算有效；否则交给底盘的 LQR_Calc。
+    bool valid = ok;
+    if (!ok)
+    {
+        u = mpc_robot->Fallback(e);
+        valid = mpc_robot->RebuildOK() && u.allFinite();
+    }
 
     // ---------- 锁内：只写结果 ----------
     {
         std::lock_guard<std::mutex> lock(mc_02->rx_mutex);
         for (int i = 0; i < 4; ++i) T_mpc[i] = static_cast<float>(u(i));
         mpc_ok = ok;
+        mpc_valid = valid;
         mpc_stamp = std::chrono::steady_clock::now();   // 1 ms 侧据此判断输出是否过期
     }
 }

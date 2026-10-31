@@ -124,7 +124,8 @@ void Robot_MPC::Init(double dt_)
 
     // 权重：直接沿用 LQR 的 Q、R（顺序见头文件）
     Q = Eigen::MatrixXd::Zero(n, n);
-    Q.diagonal() << 6000, 90, 30000, 1500, 19000, 300, 19000, 300, 600000, 500;
+    Q.diagonal() = Eigen::Map<const Eigen::VectorXd>(
+        spin_mode ? MPC_CFG::Q_SPIN : MPC_CFG::Q_NORMAL, n);
     R = Eigen::MatrixXd::Zero(p, p);
     R.diagonal() << 200, 200, 8, 8;
 
@@ -383,28 +384,10 @@ void Robot_MPC::Fill_Constraint_Am()
             r += 2;
         }
 
-    // ---- ② 绝对速度约束 |v_k| <= VEL_ABS_MAX ----
-    if constexpr (MPC_CFG::VEL_ABS_ON) {
-        for (int k = 1; k <= NP; ++k) {
-            const int src = k * n + 1;                 // 状态 1 = ds
-            Am.row(r).head(NU_QP)     =  Cp.row(src);
-            Am.row(r + 1).head(NU_QP) = -Cp.row(src);
-            r += 2;
-        }
-    }
-
-    // ---- ③ 加速度约束 |v_k - v_{k-1}| <= ACC_MAX·dt ----
-    if constexpr (MPC_CFG::VEL_RATE_ON) {
-        for (int k = 1; k <= NP; ++k) {
-            Am.row(r).head(NU_QP)     =  Cp.row(k*n + 1) - Cp.row((k-1)*n + 1);
-            Am.row(r + 1).head(NU_QP) = -Am.row(r).head(NU_QP);
-            r += 2;
-        }
-    }
 }
 
 /**
- * @brief  填充所有约束的右端项（每周期调用，随 e0 / 腿长 / v_ref 变化）
+ * @brief  填充状态约束的右端项（每周期调用，随 e0 / 腿长变化）
  *         第 k 步状态 x_k = Xfree_k + Cp_k·U，约束 lo ≤ x_k ≤ hi 化作
  *             Cp_k·U ≤  hi − m
  *            −Cp_k·U ≤ −lo + m
@@ -430,31 +413,6 @@ void Robot_MPC::Fill_Constraint_Bounds()
             r += 2;
         }
     }
-
-    // ---- ② 绝对速度约束：v = e1 + vref ----
-    if constexpr (MPC_CFG::VEL_ABS_ON) {
-        const double margin = MPC_CFG::ACC_MAX * dt;   // 一步最多能变多少
-        const double x1 = e0(1);
-        const double lo = std::min(-MPC_CFG::VEL_ABS_MAX - vref, x1 - margin);
-        const double hi = std::max( MPC_CFG::VEL_ABS_MAX - vref, x1 + margin);
-        for (int k = 1; k <= NP; ++k) {
-            const double m = Xfree(k*n + 1);
-            ubA(r)     =  hi - m;
-            ubA(r + 1) = -lo + m;
-            r += 2;
-        }
-    }
-
-    // ---- ③ 加速度约束（vref 在相邻两步相减时抵消）----
-    if constexpr (MPC_CFG::VEL_RATE_ON) {
-        const double dv = MPC_CFG::ACC_MAX * dt;       // 每步允许的速度变化
-        for (int k = 1; k <= NP; ++k) {
-            const double m = Xfree(k*n + 1) - Xfree((k-1)*n + 1);
-            ubA(r)     =  dv - m;
-            ubA(r + 1) =  dv + m;
-            r += 2;
-        }
-    }
 }
 
 /**
@@ -465,13 +423,21 @@ void Robot_MPC::Fill_Constraint_Bounds()
  * @param  u    输出：第一步的 [T_wl, T_wr, T_bl, T_br]，单位 Nm
  * @return true = 求解成功，u 有效；false = 失败，调用方应改用 Fallback()
  */
-bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u, double v_ref)
+bool Robot_MPC::Run(const VecX& err, double Ll, double Lr, VecU& u)
 {
     if (!err.allFinite()) { ok = false; return false; }          // ① 数据检查
 
     e0 = err;                                                    // ② 存当前误差态
-    vref = v_ref;                                                //    参考速度（绝对速度约束用）
     Lnow << std::clamp(Ll, 0.107, 0.332), std::clamp(Lr, 0.107, 0.332);
+
+    // 权重模式切换：换 Q 后 P 的积分方向要重新收敛，必须冷启动 DARE（几 ms）。
+    // 这期间 MPC 输出会过期，底盘自动退回 LQR，之后无缝接回。
+    if (mode_dirty) {
+        Q.diagonal() = Eigen::Map<const Eigen::VectorXd>(
+            spin_mode ? MPC_CFG::Q_SPIN : MPC_CFG::Q_NORMAL, n);
+        Rebuild(Lnow(0), Lnow(1), true);
+        mode_dirty = false;
+    }
 
     age += dt;
     // ③ 腿长变化 >2mm 或超过 100ms -> 重建
