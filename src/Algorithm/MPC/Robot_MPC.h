@@ -39,8 +39,8 @@ namespace MPC_CFG
     constexpr double DT = 0.008;
 
     // ---- 1) 力矩盒约束 [T_wl, T_wr, T_bl, T_br]，单位 Nm ----
-    constexpr double U_MIN[4] = {-15.0,  -15.0, -45.0, -45.0};
-    constexpr double U_MAX[4] = { 15.0,   15.0,  45.0,  45.0};
+    constexpr double U_MIN[4] = {-10.0,  -10.0, -45.0, -45.0};
+    constexpr double U_MAX[4] = { 10.0,   10.0,  45.0,  45.0};
 
     // ---- 2) 力矩变化率，单位 Nm / 每步(=DT) ----
     constexpr double DU[4] = {2.0, 2.0, 5.0, 5.0};
@@ -50,9 +50,9 @@ namespace MPC_CFG
     //   最长腿 LEG_MAX -> ±THETA_AT_MAX
     //   ★若方向反了，把这两个值对调即可
     constexpr double LEG_MIN      = 0.107;
-    constexpr double LEG_MAX      = 0.332;
+    constexpr double LEG_MAX      = 0.39;
     constexpr double THETA_AT_MIN = 0.40;    // L = 0.107 时的摆角限幅
-    constexpr double THETA_AT_MAX = 0.15;    // L = 0.332 时的摆角限幅
+    constexpr double THETA_AT_MAX = 0.15;    // L = 0.39 时的摆角限幅
 
     // ---- 4) 机体俯仰限幅，单位 rad ----
     constexpr double PITCH_MAX = 0.30;
@@ -73,15 +73,10 @@ namespace MPC_CFG
     constexpr double SOFT_W_QUAD_DTHETA = 1.0e5;
 
     // ---- 6) 状态权重 Q 的对角线 [s, ds, phi, dphi, th_ll, dth_ll, th_lr, dth_lr, th_b, dth_b] ----
-    //   普通模式：沿用 LQR 的 Q。
-    constexpr double Q_NORMAL[10] = {6000, 90, 30000, 1500, 19000, 300, 19000, 300, 600000, 500};
-    //   小陀螺模式：对应原 LQR 小陀螺分支的手调增益
-    //     - s、phi 不再保持（原分支把 err[0]、err[2] 的增益置 0）。取 1 而不是 0：
-    //       s、phi 是纯积分模态，权重为 0 会让 Riccati 在单位圆上不适定。
-    //     - 腿角/腿角速度 ×0.9/×0.95 增益 → Q 约 ×0.81/×0.90
-    //     - 俯仰/俯仰角速度 ×3.0/×1.4 增益 → Q 约 ×9/×1.96（增益 ∝ √Q）
-    //   这是起点，实机再调。
-    constexpr double Q_SPIN[10]   = {1, 90, 1, 1500, 15400, 270, 15400, 270, 5.4e6, 980};
+    //   普通模式
+    constexpr double Q_NORMAL[10] = {6000, 90, 1, 1, 9000, 300, 9000, 300, 600000, 500}; //   普通模式
+ 
+    constexpr double Q_SPIN[10]   = {1, 90, 1, 1500, 15400, 270, 15400, 270, 5.4e6, 980}; //   小陀螺模式
 }
 
 class Robot_MPC

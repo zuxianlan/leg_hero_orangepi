@@ -22,6 +22,16 @@
 /* Function ------------------------------------------------------------------*/
 
 
+/**
+ * @brief 翻倒判定条件：俯仰在 ±60° 内，且任一腿摆角越界
+ */
+static bool Over_Turn_Condition(Robot *robot)
+{
+    return (robot->INS.pitch < M_PI / 3.0 && robot->INS.pitch > - M_PI / 3.0) &&
+           ((robot->Chassis.left_leg.Get_theta() < -0.5 || robot->Chassis.left_leg.Get_theta() > 0.9) ||
+            (robot->Chassis.right_leg.Get_theta() < -0.5 || robot->Chassis.right_leg.Get_theta() > 0.9));
+}
+
 void Class_FSM_Chassis::TIM_1ms_Calculate_PeriodElapsedCallback()
 {
     Status[Now_Status_Serial].Count_Time++;
@@ -29,12 +39,11 @@ void Class_FSM_Chassis::TIM_1ms_Calculate_PeriodElapsedCallback()
     switch (Now_Status_Serial)
     {
     case NORMAL:
-        if ((robot->INS.pitch < M_PI / 3.0 && robot->INS.pitch > - M_PI / 3.0) &&
-            ((robot->Chassis.left_leg.Get_theta() < -0.5 || robot->Chassis.left_leg.Get_theta() > 0.9) ||
-            (robot->Chassis.right_leg.Get_theta() < -0.5 || robot->Chassis.right_leg.Get_theta() > 0.9)))
+        if (Over_Turn_Condition(robot))
         {
+            // 先进入 OVER_TURN 确认期：底盘模式保持 NORMAL，继续平衡控制
+            over_turn_confirming = true;
             Set_Status(OVER_TURN);
-            robot->Chassis.Set_FSM_mod(OVER_TURN);
         }
         else if(robot->INS.pitch > 1.0)
         {
@@ -68,6 +77,25 @@ void Class_FSM_Chassis::TIM_1ms_Calculate_PeriodElapsedCallback()
         }
     break;
     case OVER_TURN:
+        // ---- 确认期（仅从 NORMAL 进入时）：处于此状态满 OVER_TURN_CONFIRM_TIME 才判为真翻倒 ----
+        if (over_turn_confirming)
+        {
+            if (!Over_Turn_Condition(robot))
+            {
+                // 确认期内条件消失：瞬态误触发（如被踹），退回 NORMAL
+                over_turn_confirming = false;
+                Set_Status(NORMAL);
+                robot->Chassis.Set_FSM_mod(NORMAL);
+            }
+            else if (Status[Now_Status_Serial].Count_Time >= OVER_TURN_CONFIRM_TIME)
+            {
+                // 确认翻倒：此时底盘才切到翻倒模式，开始执行 Check_over_turn_mod()
+                over_turn_confirming = false;
+                robot->Chassis.Set_FSM_mod(OVER_TURN);
+            }
+            break;
+        }
+
         // if (((robot->Chassis.left_leg.Get_theta() >= 1.2) || (robot->Chassis.right_leg.Get_theta() >= 1.2))&&
         // (fabs(robot->Chassis.left_leg.Get_theta() - robot->Chassis.right_leg.Get_theta()) < 0.3f)&&
         //     (robot->INS.pitch >= -M_PI/4.0 && robot->INS.pitch <= M_PI/4.0))
@@ -256,7 +284,6 @@ void Class_FSM_Up_staris::TIM_1ms_Calculate_PeriodElapsedCallback()
 {
     Status[Now_Status_Serial].Count_Time++;
 
-    // �Լ����ű�д״̬ת�ƺ���
     switch (Now_Status_Serial)
     {
     case APPROACH:
@@ -445,7 +472,9 @@ void Robot::Chassis_Control()
     else if (chassis_mode == CHASSIS_INFANTRY_FOLLOW_GIMBAL_YAW)
     {
         // -- 正常站立或离地，且不在上楼梯屈腿状态 --
-        if ((FSM_Chassis.Get_Now_Status_Serial() == NORMAL || FSM_Chassis.Get_Now_Status_Serial() == ABOVE_GROUND)&& FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
+        // 翻倒确认期内也走正常控制：此时还没判定翻倒，必须继续平衡
+        if ((FSM_Chassis.Get_Now_Status_Serial() == NORMAL || FSM_Chassis.Get_Now_Status_Serial() == ABOVE_GROUND ||
+             FSM_Chassis.Is_Over_Turn_Confirming()) && FSM_Up_staris.Get_Now_Status_Serial() != UP_STARIS_BEND_LEG)
         {
             float vx_channel = 0, vy_channel = 0, vz_channel = 0, Roll_channel = 0, vel = 0;
             // sin: 相对角度正弦; cos: 跟随偏航与相对角度差的余弦
@@ -620,7 +649,7 @@ void Robot::Chassis_Control()
             // 目标高度由遥控器上下通道积分控制，并限幅
             Target_height += vz_channel * RC_to_Chassis_Leg_Gain;
             Target_dheight = 0.0;
-            Float_Math_Constrain(&Target_height, 0.13f, 0.34f);
+            Float_Math_Constrain(&Target_height, 0.13f, 0.37f);
 
             // 偏航角速度通过斜坡函数平滑处理，防止突变
             Slope_Omega.Set_Target(Target_Omega);

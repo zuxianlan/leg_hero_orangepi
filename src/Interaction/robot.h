@@ -62,6 +62,10 @@
 #define MAX_Velocity 2.0f
 #define MAX_Velocity_Y 2.0f
 
+// 翻倒确认时间 [ms]：从 NORMAL 进入 OVER_TURN 后，越界条件需持续这么久才判为真翻倒
+// 确认期内底盘照常平衡，条件消失则退回 NORMAL（防止被踹等瞬态误触发）
+#define OVER_TURN_CONFIRM_TIME  180
+
 // Slope_X 步长随腿长缩放：取左右腿中较长的一条
 //   腿长 <= SLOPE_X_LEG_SHORT 时系数为 1（与原来的斜坡一致）
 //   腿长 >= SLOPE_X_LEG_LONG  时系数为 SLOPE_X_SCALE_LONG，中间线性插值
@@ -143,7 +147,12 @@ public:
 
     void TIM_1ms_Calculate_PeriodElapsedCallback();
 
+    // 是否处于 OVER_TURN 的确认期（此时底盘仍按 NORMAL 控制）
+    inline bool Is_Over_Turn_Confirming() const { return over_turn_confirming; }
+
 private:
+
+    bool over_turn_confirming = false;
 
 };
 
