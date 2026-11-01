@@ -49,7 +49,7 @@ namespace MPC_CFG
     //   最短腿 LEG_MIN -> ±THETA_AT_MIN
     //   最长腿 LEG_MAX -> ±THETA_AT_MAX
     //   ★若方向反了，把这两个值对调即可
-    constexpr double LEG_MIN      = 0.107;
+    constexpr double LEG_MIN      = 0.12;
     constexpr double LEG_MAX      = 0.39;
     constexpr double THETA_AT_MIN = 0.40;    // L = 0.107 时的摆角限幅
     constexpr double THETA_AT_MAX = 0.15;    // L = 0.39 时的摆角限幅
@@ -74,7 +74,7 @@ namespace MPC_CFG
 
     // ---- 6) 状态权重 Q 的对角线 [s, ds, phi, dphi, th_ll, dth_ll, th_lr, dth_lr, th_b, dth_b] ----
     //   普通模式
-    constexpr double Q_NORMAL[10] = {6000, 90, 1, 1, 9000, 300, 9000, 300, 600000, 500}; //   普通模式
+    constexpr double Q_NORMAL[10] = {6000, 90, 30000, 1500, 9000, 300, 9000, 300, 600000, 500}; //   普通模式
  
     constexpr double Q_SPIN[10]   = {1, 90, 1, 1500, 15400, 270, 15400, 270, 5.4e6, 980}; //   小陀螺模式
 }
