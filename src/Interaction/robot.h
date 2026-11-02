@@ -70,9 +70,9 @@
 //   腿长 <= SLOPE_X_LEG_SHORT 时系数为 1（与原来的斜坡一致）
 //   腿长 >= SLOPE_X_LEG_LONG  时系数为 SLOPE_X_SCALE_LONG，中间线性插值
 #define SLOPE_X_LEG_SHORT       0.12f
-#define SLOPE_X_LEG_LONG        0.39f
+#define SLOPE_X_LEG_LONG        0.3f
 #define SLOPE_X_SCALE_LONG      0.70f //起步慢调大
-#define SLOPE_X_DECREASE_BASE   (1.0f / 200.0f)
+#define SLOPE_X_DECREASE_BASE   (1.0f / 100.0f)
 
 /* Variable && Struct --------------------------------------------------------*/
 

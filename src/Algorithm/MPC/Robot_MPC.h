@@ -52,7 +52,7 @@ namespace MPC_CFG
     constexpr double LEG_MIN      = 0.12;
     constexpr double LEG_MAX      = 0.39;
     constexpr double THETA_AT_MIN = 0.40;    // L = 0.107 时的摆角限幅
-    constexpr double THETA_AT_MAX = 0.15;    // L = 0.39 时的摆角限幅
+    constexpr double THETA_AT_MAX = 0.32;    // L = 0.39 时的摆角限幅
 
     // ---- 4) 机体俯仰限幅，单位 rad ----
     constexpr double PITCH_MAX = 0.30;
@@ -74,7 +74,7 @@ namespace MPC_CFG
 
     // ---- 6) 状态权重 Q 的对角线 [s, ds, phi, dphi, th_ll, dth_ll, th_lr, dth_lr, th_b, dth_b] ----
     //   普通模式
-    constexpr double Q_NORMAL[10] = {6000, 90, 30000, 1500, 9000, 300, 9000, 300, 600000, 500}; //   普通模式
+    constexpr double Q_NORMAL[10] = {6000, 400, 30000, 1500, 3000, 100, 3000, 100, 500000, 500}; //   普通模式
  
     constexpr double Q_SPIN[10]   = {1, 90, 1, 1500, 15400, 270, 15400, 270, 5.4e6, 980}; //   小陀螺模式
 
@@ -83,7 +83,7 @@ namespace MPC_CFG
     //   ② 关节限幅：由 leg_convert 的线性系数精确解出 Tp 区间，使 |T1|,|T2| <= JOINT_T_MAX - JOINT_MARGIN
     constexpr bool   JOINT_BOUND_ON = true;
     constexpr double JOINT_T_MAX    = 45.0;   // ★必须与 VMC_Calc_2() 里的关节限幅一致
-    constexpr double JOINT_MARGIN   = 2.0;    // 给 F0 / PID trim 在两次求解之间的变化留余量 [Nm]
+    constexpr double JOINT_MARGIN   = 6.0;    // 给 F0 / PID trim 在两次求解之间的变化留余量 [Nm]
     constexpr double TP_ROOM_MIN    = 8.0;    // 髋通道至少保留 ±8 Nm，F0 很大时也不完全失去控制
     //   轮通道不做动态边界，始终用 1) 的 U_MIN/U_MAX
     //   边界一阶低通系数（1 kHz 下 0.05 约 20 ms），滤掉 F0、trim 的高频抖动
@@ -95,7 +95,7 @@ class Robot_MPC
 public:
     static constexpr int n  = 10;   // 状态个数
     static constexpr int p  = 4;    // 控制个数
-    static constexpr int NP = 15;   // 预测步数：15 * 8ms = 120ms
+    static constexpr int NP = 20;   // 预测步数：15 * 8ms = 120ms
 
     // ===== 状态约束（软约束）：{状态下标, 腿长来源, 下限, 上限, 松弛线性权, 松弛二次权} =====
     //   leg = -1 → 用固定 lo/hi
