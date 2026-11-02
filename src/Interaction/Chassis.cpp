@@ -291,6 +291,9 @@ void class_Chassis::Follow_Gimbal_Control()
     right_leg.Set_F0(-MPC_body.u_out(1) + spring_forcer - M / cosf(right_leg.Get_theta()) - Jump_force - F_mc - 0.0f);
     right_leg.VMC_Calc_2();
     
+    // ===== MPC 动态力矩边界：用本拍刚设好的 F0 / Tp / trim 计算，供下次 MPC 求解 =====
+    MPC_Torque_Bound_Update();
+
     // ===== 记录本拍实际生效的通道命令，供下一拍 Δu 约束当起点 =====
     // 轮矩反除 slip_factor：T[0..1] 已被打滑系数缩放过，反除回来才是决策变量量纲；
     //   否则打滑时 u_last 只有 0.35 倍，Δu 会把力矩一拍一拍越拽越低。
@@ -831,6 +834,106 @@ void class_Chassis::LQR_Calc()
 }
 
 /**
+ * @brief 由关节限幅 |T_j| <= JOINT_T_MAX - JOINT_MARGIN 解出髋通道 u 的可行区间，并与 [lo, hi] 取交集
+ * @param leg        对应的腿（F0、phi1/phi4 已在本拍设好）
+ * @param tp_offset  腿上实际 Tp = u + tp_offset（左腿 = -trim，右腿 = +trim）
+ * @param lo, hi     输入输出：髋通道 u 的区间
+ * @attention 奇异姿态（系数非有限或 dT/dTp 过小）时不改动 [lo, hi]
+ */
+static void Joint_Tp_Window(class_vmc_leg& leg, float tp_offset, float& lo, float& hi)
+{
+    float a[2], b[2];
+    leg.Joint_Coef(a, b);
+
+    const float Tmax = static_cast<float>(MPC_CFG::JOINT_T_MAX - MPC_CFG::JOINT_MARGIN);
+    const float F0   = leg.Get_F0();
+    float tp_lo = -1.0e6f, tp_hi = 1.0e6f;
+
+    for (int j = 0; j < 2; ++j)
+    {
+        if (!std::isfinite(a[j]) || !std::isfinite(b[j]) || fabsf(b[j]) < 1.0e-4f) return;
+        // -Tmax <= a_j·F0 + b_j·Tp <= Tmax  ->  Tp 的一段区间
+        float t1 = (-Tmax - a[j] * F0) / b[j];
+        float t2 = ( Tmax - a[j] * F0) / b[j];
+        if (t1 > t2) std::swap(t1, t2);
+        tp_lo = fmaxf(tp_lo, t1);
+        tp_hi = fminf(tp_hi, t2);
+    }
+
+    // Tp 区间 -> u 区间：u = Tp - tp_offset
+    lo = fmaxf(lo, tp_lo - tp_offset);
+    hi = fminf(hi, tp_hi - tp_offset);
+}
+
+/**
+ * @brief 地面支持力估计（与 ground_detection_L/R 的 FN 同式）
+ *        符号沿用离地检测的约定：左腿 FN > 20、右腿 FN < -20 判为离地（above_flag = 1），
+ *        即站立时左腿 FN 为负、右腿 FN 为正，调用方按腿取号成「着地为正」
+ */
+static float Leg_Support_Force(class_vmc_leg& leg)
+{
+    const float L0 = leg.Get_L0();
+    if (L0 < 0.05f) return 0.0f;
+    return -leg.Get_F0() * cosf(leg.Get_theta()) - leg.Get_Tp() * sinf(leg.Get_theta()) / L0;
+}
+
+/**
+ * @brief 计算 10 状态 MPC 的动态力矩边界（1 kHz，Follow_Gimbal_Control 里两腿 VMC_Calc_2 之后调用）
+ *        ② 关节限幅：髋通道区间由 leg_convert 线性系数精确解出，与 VMC_Calc_2 的关节限幅同源
+ *        ③ 摩擦限幅：|T_w| <= μ·N·R_w（MPC_CFG::FRIC_BOUND_ON 打开时生效）
+ *        结果一阶低通后写入 mpc_u_lo/hi，MPC 线程在锁内拷走
+ */
+void class_Chassis::MPC_Torque_Bound_Update()
+{
+    float lo[4], hi[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        lo[i] = static_cast<float>(MPC_CFG::U_MIN[i]);
+        hi[i] = static_cast<float>(MPC_CFG::U_MAX[i]);
+    }
+
+    // ---- ② 关节限幅：左 Tp = u2 - trim，右 Tp = u3 + trim（与 Follow_Gimbal_Control 的 Set_Tp 一致）----
+    if constexpr (MPC_CFG::JOINT_BOUND_ON)
+    {
+        const float trim = PID_tp_omega.Get_Out();
+        Joint_Tp_Window(left_leg,  -trim, lo[2], hi[2]);
+        Joint_Tp_Window(right_leg, +trim, lo[3], hi[3]);
+
+        const float room = static_cast<float>(MPC_CFG::TP_ROOM_MIN);
+        for (int i = 2; i < 4; ++i)
+        {
+            lo[i] = fminf(lo[i], -room);
+            hi[i] = fmaxf(hi[i],  room);
+        }
+    }
+
+    // ---- ③ 摩擦限幅：轮的转动方程 Iw·ω̇ = T_w − f·R_w，Iw 很小，故地面摩擦力 f ≈ T_w / R_w ----
+    mpc_N_est[0] = -Leg_Support_Force(left_leg);    // 左腿：FN 为负 = 着地
+    mpc_N_est[1] =  Leg_Support_Force(right_leg);   // 右腿：FN 为正 = 着地
+    if constexpr (MPC_CFG::FRIC_BOUND_ON)
+    {
+        const float room = static_cast<float>(MPC_CFG::WHEEL_ROOM_MIN);
+        for (int i = 0; i < 2; ++i)
+        {
+            float n_sup = mpc_N_est[i];   // 不能叫 N：Chassis.h 里有 #define N 15
+            Float_Math_Constrain(&n_sup, 0.0f, static_cast<float>(MPC_CFG::FRIC_N_MAX));
+            const float w = static_cast<float>(MPC_CFG::FRIC_MU * MPC_CFG::WHEEL_R) * n_sup;
+            lo[i] = fminf(fmaxf(lo[i], -w), -room);
+            hi[i] = fmaxf(fminf(hi[i],  w),  room);
+        }
+    }
+
+    // ---- 低通后写入（本函数在 1 kHz 锁内执行，MPC 线程在锁内读取）----
+    const float k = static_cast<float>(MPC_CFG::BOUND_FILTER);
+    for (int i = 0; i < 4; ++i)
+    {
+        if (!std::isfinite(lo[i]) || !std::isfinite(hi[i])) continue;   // 异常值不进滤波器
+        mpc_u_lo[i] += k * (lo[i] - mpc_u_lo[i]);
+        mpc_u_hi[i] += k * (hi[i] - mpc_u_hi[i]);
+    }
+}
+
+/**
  * @brief 10 状态 MPC 计算（MPC 任务每 MPC_CFG::DT 调用一次，输出 T_mpc[4] / mpc_ok / mpc_valid）
  *
  * 为什么锁要在函数内部：
@@ -842,7 +945,7 @@ void class_Chassis::LQR_Calc()
 void class_Chassis::MPC_Robot_Calc()
 {
     Robot_MPC::VecX e;
-    Robot_MPC::VecU u_last;
+    Robot_MPC::VecU u_last, u_lo, u_hi;
     double Ll, Lr;
     bool spin;
 
@@ -856,6 +959,11 @@ void class_Chassis::MPC_Robot_Calc()
         // 历史取「上一拍实际生效的通道命令」，不是 T_mpc：MPC 在 LQR 接管/打滑缩放
         // 期间照样在算，T_mpc 与真正施加到电机的力矩不是一回事。
         for (int i = 0; i < 4; ++i) u_last(i) = static_cast<double>(mpc_u_hist[i]);
+        for (int i = 0; i < 4; ++i)
+        {
+            u_lo(i) = static_cast<double>(mpc_u_lo[i]);
+            u_hi(i) = static_cast<double>(mpc_u_hi[i]);
+        }
     }   // ← 自动解锁
 
     // ---------- 锁外：求解（可能重建模型）----------
@@ -864,6 +972,8 @@ void class_Chassis::MPC_Robot_Calc()
     mpc_robot->SetSpinMode(spin);
 
     Robot_MPC::VecU u;
+    // 顺序不能反：先设动态边界，SetLastControl 才会把 u_last 截进新边界（保证 Δu 约束可行）
+    mpc_robot->SetControlBounds(u_lo, u_hi);
     mpc_robot->SetLastControl(u_last);
     const bool ok = mpc_robot->Run(e, Ll, Lr, u);
     // QP 失败 -> 下发 Fallback（-K·e 并等比限幅）。

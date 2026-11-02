@@ -114,6 +114,7 @@ public:
     void MPC_Body_Calc();
     void LQR_Calc();
     void MPC_Robot_Calc();          // MPC 任务调用（周期 MPC_CFG::DT）：10 状态 MPC 求解一次
+    void MPC_Torque_Bound_Update(); // 1 kHz 调用：按当前腿部状态算 MPC 的动态力矩边界
 
     inline void Set_Target_X(float __Target_X)                         { Target_X = __Target_X; }
     inline void Set_Target_Velocity(float __Target_Velocity)           { Target_Velocity = __Target_Velocity; }
@@ -170,6 +171,9 @@ public:
     inline bool  Get_mpc_used() const { return mpc_applied; }  // 本拍是否真的用了 MPC
     inline bool  Get_mpc_rebuild_ok() const { return mpc_robot && mpc_robot->RebuildOK(); }
     inline bool  Get_mpc_riccati_ok() const { return mpc_robot && mpc_robot->RiccatiOK(); }
+    inline float Get_mpc_u_lo(int i) const  { return mpc_u_lo[i]; }   // MPC 动态力矩下界 [Nm]
+    inline float Get_mpc_u_hi(int i) const  { return mpc_u_hi[i]; }   // MPC 动态力矩上界 [Nm]
+    inline float Get_mpc_N_est(int i) const { return mpc_N_est[i]; }  // 左/右腿地面支持力估计 [N]
 
 private:
     KalmanFilter kf = KalmanFilter(2,2,0,nullptr,nullptr,nullptr,nullptr,nullptr);
@@ -220,6 +224,12 @@ private:
     bool  mpc_applied = false;   // 本拍是否真的采用 MPC 结果
     std::chrono::steady_clock::time_point mpc_stamp{};   // 最后一次 MPC 求解完成的时刻
     float mpc_u_hist[4] = {};    // 上一拍实际生效的通道命令（MPC 决策变量量纲）
+    // MPC 动态力矩边界（1 kHz 侧低通后写入，MPC 线程在锁内拷走），初值为静态盒
+    float mpc_u_lo[4] = {static_cast<float>(MPC_CFG::U_MIN[0]), static_cast<float>(MPC_CFG::U_MIN[1]),
+                         static_cast<float>(MPC_CFG::U_MIN[2]), static_cast<float>(MPC_CFG::U_MIN[3])};
+    float mpc_u_hi[4] = {static_cast<float>(MPC_CFG::U_MAX[0]), static_cast<float>(MPC_CFG::U_MAX[1]),
+                         static_cast<float>(MPC_CFG::U_MAX[2]), static_cast<float>(MPC_CFG::U_MAX[3])};
+    float mpc_N_est[2] = {};     // 左/右腿地面支持力估计（调试用）
 
     // 记录本拍实际生效的通道命令，供下一拍 Δu 约束当起点
     inline void Record_MPC_History(float wl, float wr, float hl, float hr)

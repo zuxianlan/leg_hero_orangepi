@@ -32,6 +32,9 @@ public:
   uint8_t ground_detection_L();
   uint8_t ground_detection_R();
 
+  // F0/Tp -> 两个关节力矩的线性系数：T_j = dT_dF0[j]*F0 + dT_dTp[j]*Tp（与 VMC_Calc_2 同一套 leg_convert）
+  void Joint_Coef(float dT_dF0[2], float dT_dTp[2]);
+
   inline void Set_phi1(float __phi1);
 
   inline void Set_dphi1(float __dphi1);

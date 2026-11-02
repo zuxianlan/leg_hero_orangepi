@@ -75,6 +75,16 @@ void class_vmc_leg::VMC_Calc_2()
     else if(torque_set[1] < -tmp)   {torque_set[1] = -tmp;}
 }
 
+/**
+ * @brief 当前姿态下 F0/Tp 到两个关节力矩的线性系数
+ *        leg_convert 对 (F0, Tp) 是线性的（雅可比转置），分别代入单位力/单位力矩即得系数
+ */
+void class_vmc_leg::Joint_Coef(float dT_dF0[2], float dT_dTp[2])
+{
+    leg_convert(1.0f, 0.0f, phi1, phi4, dT_dF0);
+    leg_convert(0.0f, 1.0f, phi1, phi4, dT_dTp);
+}
+
 void Fitting_K_Calc(float (*fitting_k)[10],float (*p)[6],float L_l,float L_r)
 {
 	static unsigned short int i = 0;

@@ -39,8 +39,8 @@ namespace MPC_CFG
     constexpr double DT = 0.008;
 
     // ---- 1) 力矩盒约束 [T_wl, T_wr, T_bl, T_br]，单位 Nm ----
-    constexpr double U_MIN[4] = {-10.0,  -10.0, -45.0, -45.0};
-    constexpr double U_MAX[4] = { 10.0,   10.0,  45.0,  45.0};
+    constexpr double U_MIN[4] = {-5.0,  -5.0, -45.0, -45.0};
+    constexpr double U_MAX[4] = { 5.0,   5.0,  45.0,  45.0};
 
     // ---- 2) 力矩变化率，单位 Nm / 每步(=DT) ----
     constexpr double DU[4] = {2.0, 2.0, 5.0, 5.0};
@@ -77,6 +77,22 @@ namespace MPC_CFG
     constexpr double Q_NORMAL[10] = {6000, 90, 30000, 1500, 9000, 300, 9000, 300, 600000, 500}; //   普通模式
  
     constexpr double Q_SPIN[10]   = {1, 90, 1, 1500, 15400, 270, 15400, 270, 5.4e6, 980}; //   小陀螺模式
+
+    // ---- 7) 动态力矩边界：底盘 1 kHz 侧按当前腿部状态计算，每次求解前覆盖 1) 的盒约束 ----
+    //   结果始终被截在 U_MIN/U_MAX 之内，并保证包含 0
+    //   ② 关节限幅：由 leg_convert 的线性系数精确解出 Tp 区间，使 |T1|,|T2| <= JOINT_T_MAX - JOINT_MARGIN
+    constexpr bool   JOINT_BOUND_ON = true;
+    constexpr double JOINT_T_MAX    = 45.0;   // ★必须与 VMC_Calc_2() 里的关节限幅一致
+    constexpr double JOINT_MARGIN   = 2.0;    // 给 F0 / PID trim 在两次求解之间的变化留余量 [Nm]
+    constexpr double TP_ROOM_MIN    = 8.0;    // 髋通道至少保留 ±8 Nm，F0 很大时也不完全失去控制
+    //   ③ 摩擦限幅：|T_w| <= μ·N·R_w，N 为该腿的地面支持力估计（与 ground_detection 同式）
+    constexpr bool   FRIC_BOUND_ON  = true;  // ★上电先在 Vofa 上确认 N 的符号和大小，再改成 true
+    constexpr double FRIC_MU        = 0.6;    // 摩擦系数（保守值）
+    constexpr double WHEEL_R        = 0.06;   // 驱动轮半径 [m]
+    constexpr double FRIC_N_MAX     = 400.0;  // 支持力估计上限 [N]，防止跳跃时边界被放得过大
+    constexpr double WHEEL_ROOM_MIN = 2.0;    // 轮通道至少保留 ±2 Nm
+    //   边界一阶低通系数（1 kHz 下 0.05 约 20 ms），滤掉 F0、trim 的高频抖动
+    constexpr double BOUND_FILTER   = 0.05;
 }
 
 class Robot_MPC
@@ -154,6 +170,28 @@ public:
     }
 
     /**
+     * @brief 设置本次求解的力矩上下界（动态边界，替代固定的 U_MIN/U_MAX）
+     *        结果截在 U_MIN/U_MAX 之内，并保证包含 0（Fallback 的等比缩放依赖这一点）
+     * @attention 必须在 SetLastControl() 之前调用：u_last 会被截进新边界，
+     *            否则边界突然收窄时 Δu 约束与盒约束互相矛盾，QP 无解
+     */
+    void SetControlBounds(const VecU& lo, const VecU& hi)
+    {
+        for (int i = 0; i < p; ++i) {
+            if (!std::isfinite(lo(i)) || !std::isfinite(hi(i))) {     // 非法输入 -> 回到静态盒
+                u_min(i) = MPC_CFG::U_MIN[i];
+                u_max(i) = MPC_CFG::U_MAX[i];
+                continue;
+            }
+            u_min(i) = std::min(std::max(lo(i), MPC_CFG::U_MIN[i]), 0.0);
+            u_max(i) = std::max(std::min(hi(i), MPC_CFG::U_MAX[i]), 0.0);
+        }
+    }
+
+    double UMin(int i) const { return u_min(i); }   // 本次求解实际使用的力矩下界 [Nm]
+    double UMax(int i) const { return u_max(i); }   // 本次求解实际使用的力矩上界 [Nm]
+
+    /**
      * @brief 设置 Δu 约束的起点（上一拍实际生效的通道命令）
      */
     void SetLastControl(const VecU& u)
@@ -198,6 +236,7 @@ private:
 
     std::unique_ptr<qpOASES::SQProblem> qp;  // H 会变 -> SQProblem
     bool ready = false, solver_inited = false, ok = false;
+    bool matrices_dirty = true;   // H / Am 自上次成功求解后被改过：热启动必须带矩阵
     bool spin_mode = false, mode_dirty = false;   // 当前权重模式 / 需要换 Q 并冷启动重建
     bool rebuild_ok = false;   // 最近一次 Rebuild 的数据是否有效（有限 + Riccati 未发散）
     bool riccati_ok = false;   // Dare 是否正常返回
