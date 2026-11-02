@@ -638,8 +638,8 @@ void Robot::Chassis_Control()
 
                 #if FUS_I6X
                 // 富斯I6X遥控器：偏航角速度由PID计算
-                //Target_Omega = -PID_Follow_yaw.Get_Out();
-                Target_Omega = 0.0f;
+                Target_Omega = -PID_Follow_yaw.Get_Out();
+                //Target_Omega = 0.0f;
                 #endif
 
                 #if GAMEPAD
@@ -648,10 +648,10 @@ void Robot::Chassis_Control()
                 #endif
 
                 // 偏航PID跟随计算
-                // PID_Follow_yaw.Set_Target(follow_yaw_angle);
-                // PID_Follow_yaw.Set_Now(mc02_SerialPort.Rx_Data.motor_yaw_angle);
-                // PID_Follow_yaw.TIM_Calculate_PeriodElapsedCallback();
-                // Target_Omega = -PID_Follow_yaw.Get_Out();
+                PID_Follow_yaw.Set_Target(follow_yaw_angle);
+                PID_Follow_yaw.Set_Now(mc02_SerialPort.Rx_Data.motor_yaw_angle);
+                PID_Follow_yaw.TIM_Calculate_PeriodElapsedCallback();
+                Target_Omega = -PID_Follow_yaw.Get_Out();
 
             }
             

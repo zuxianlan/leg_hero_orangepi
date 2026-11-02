@@ -355,9 +355,10 @@ void Vofa_start()
     // robot.Vofa_TCP.send_message.v11 = robot.Chassis.Get_mpc_riccati_ok() ? 1.0f : 0.0f;
 
     // ===== 10 状态 MPC 上电调试：支持力极性 / 动态力矩边界 / MPC 输出 / 软约束 =====
-    // 支持力估计：站稳时两条腿都应为正，约 +180~220 N；为负说明极性反了，FRIC_BOUND_ON 必须先关
-    robot.Vofa_TCP.send_message.v0  = robot.Chassis.Get_mpc_N_est(0);   // 左腿 N [N]
-    robot.Vofa_TCP.send_message.v1  = robot.Chassis.Get_mpc_N_est(1);   // 右腿 N [N]
+    // 摩擦约束已删除，支持力估计 Get_mpc_N_est 不再存在
+    // // 支持力估计：站稳时两条腿都应为正，约 +180~220 N；为负说明极性反了，FRIC_BOUND_ON 必须先关
+    // robot.Vofa_TCP.send_message.v0  = robot.Chassis.Get_mpc_N_est(0);   // 左腿 N [N]
+    // robot.Vofa_TCP.send_message.v1  = robot.Chassis.Get_mpc_N_est(1);   // 右腿 N [N]
     // MPC 输出力矩，和 v2~v5 放同一张图看是否贴边
     robot.Vofa_TCP.send_message.v2  = robot.Chassis.Get_T_mpc(0);       // T_wl
     robot.Vofa_TCP.send_message.v3  = robot.Chassis.Get_T_mpc(1);       // T_wr

@@ -273,8 +273,10 @@ void class_Chassis::Follow_Gimbal_Control()
                    && MPC_Output_Fresh() && chassis_fsm_mode != ABOVE_GROUND);
     if (mpc_applied)
     {
-        T[0] = T_mpc[0] * (spin_mode ? 1.0f : slip_factor_l);
-        T[1] = T_mpc[1] * (spin_mode ? 1.0f : slip_factor_r);
+        // T[0] = T_mpc[0] * (spin_mode ? 1.0f : slip_factor_l);
+        // T[1] = T_mpc[1] * (spin_mode ? 1.0f : slip_factor_r);
+        T[0] = T_mpc[0];
+        T[1] = T_mpc[1];
         T[2] = T_mpc[2];
         T[3] = T_mpc[3];
     }
@@ -300,9 +302,10 @@ void class_Chassis::Follow_Gimbal_Control()
     // 髋矩记 T[2]/T[3]（不含 PID trim）：trim 属于另一个反馈环，不该算进 MPC 的历史。
     {
         const bool slip_on = (!spin_mode && chassis_fsm_mode != ABOVE_GROUND);
-        Record_MPC_History(T[0] / (slip_on ? slip_factor_l : 1.0f),
-                           T[1] / (slip_on ? slip_factor_r : 1.0f),
-                           T[2], T[3]);
+        // Record_MPC_History(T[0] / (slip_on ? slip_factor_l : 1.0f),
+        //                    T[1] / (slip_on ? slip_factor_r : 1.0f),
+        //                    T[2], T[3]);
+        Record_MPC_History(T[0], T[1], T[2], T[3]);
     }
 
     last_Target_X = Target_X;
@@ -866,21 +869,8 @@ static void Joint_Tp_Window(class_vmc_leg& leg, float tp_offset, float& lo, floa
 }
 
 /**
- * @brief 地面支持力估计（与 ground_detection_L/R 的 FN 同式）
- *        符号沿用离地检测的约定：左腿 FN > 20、右腿 FN < -20 判为离地（above_flag = 1），
- *        即站立时左腿 FN 为负、右腿 FN 为正，调用方按腿取号成「着地为正」
- */
-static float Leg_Support_Force(class_vmc_leg& leg)
-{
-    const float L0 = leg.Get_L0();
-    if (L0 < 0.05f) return 0.0f;
-    return -leg.Get_F0() * cosf(leg.Get_theta()) - leg.Get_Tp() * sinf(leg.Get_theta()) / L0;
-}
-
-/**
  * @brief 计算 10 状态 MPC 的动态力矩边界（1 kHz，Follow_Gimbal_Control 里两腿 VMC_Calc_2 之后调用）
  *        ② 关节限幅：髋通道区间由 leg_convert 线性系数精确解出，与 VMC_Calc_2 的关节限幅同源
- *        ③ 摩擦限幅：|T_w| <= μ·N·R_w（MPC_CFG::FRIC_BOUND_ON 打开时生效）
  *        结果一阶低通后写入 mpc_u_lo/hi，MPC 线程在锁内拷走
  */
 void class_Chassis::MPC_Torque_Bound_Update()
@@ -904,22 +894,6 @@ void class_Chassis::MPC_Torque_Bound_Update()
         {
             lo[i] = fminf(lo[i], -room);
             hi[i] = fmaxf(hi[i],  room);
-        }
-    }
-
-    // ---- ③ 摩擦限幅：轮的转动方程 Iw·ω̇ = T_w − f·R_w，Iw 很小，故地面摩擦力 f ≈ T_w / R_w ----
-    mpc_N_est[0] = -Leg_Support_Force(left_leg);    // 左腿：FN 为负 = 着地
-    mpc_N_est[1] =  Leg_Support_Force(right_leg);   // 右腿：FN 为正 = 着地
-    if constexpr (MPC_CFG::FRIC_BOUND_ON)
-    {
-        const float room = static_cast<float>(MPC_CFG::WHEEL_ROOM_MIN);
-        for (int i = 0; i < 2; ++i)
-        {
-            float n_sup = mpc_N_est[i];   // 不能叫 N：Chassis.h 里有 #define N 15
-            Float_Math_Constrain(&n_sup, 0.0f, static_cast<float>(MPC_CFG::FRIC_N_MAX));
-            const float w = static_cast<float>(MPC_CFG::FRIC_MU * MPC_CFG::WHEEL_R) * n_sup;
-            lo[i] = fminf(fmaxf(lo[i], -w), -room);
-            hi[i] = fmaxf(fminf(hi[i],  w),  room);
         }
     }
 

@@ -85,12 +85,7 @@ namespace MPC_CFG
     constexpr double JOINT_T_MAX    = 45.0;   // ★必须与 VMC_Calc_2() 里的关节限幅一致
     constexpr double JOINT_MARGIN   = 2.0;    // 给 F0 / PID trim 在两次求解之间的变化留余量 [Nm]
     constexpr double TP_ROOM_MIN    = 8.0;    // 髋通道至少保留 ±8 Nm，F0 很大时也不完全失去控制
-    //   ③ 摩擦限幅：|T_w| <= μ·N·R_w，N 为该腿的地面支持力估计（与 ground_detection 同式）
-    constexpr bool   FRIC_BOUND_ON  = true;  // ★上电先在 Vofa 上确认 N 的符号和大小，再改成 true
-    constexpr double FRIC_MU        = 0.6;    // 摩擦系数（保守值）
-    constexpr double WHEEL_R        = 0.06;   // 驱动轮半径 [m]
-    constexpr double FRIC_N_MAX     = 400.0;  // 支持力估计上限 [N]，防止跳跃时边界被放得过大
-    constexpr double WHEEL_ROOM_MIN = 2.0;    // 轮通道至少保留 ±2 Nm
+    //   轮通道不做动态边界，始终用 1) 的 U_MIN/U_MAX
     //   边界一阶低通系数（1 kHz 下 0.05 约 20 ms），滤掉 F0、trim 的高频抖动
     constexpr double BOUND_FILTER   = 0.05;
 }
