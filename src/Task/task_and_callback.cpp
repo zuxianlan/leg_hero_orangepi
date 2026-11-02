@@ -340,19 +340,42 @@ void Vofa_start()
     // robot.Vofa_TCP.send_message.v8 = robot.Chassis.lqr_term[8];   // err8 * K8
     // robot.Vofa_TCP.send_message.v9 = robot.Chassis.lqr_term[9];   // err9 * K9
 
-    robot.Vofa_TCP.send_message.v0 = robot.Chassis.Get_T_mpc(0);
-    robot.Vofa_TCP.send_message.v1 = robot.Chassis.Get_T_mpc(1);
-    robot.Vofa_TCP.send_message.v2 = robot.Chassis.Get_T_mpc(2);
-    robot.Vofa_TCP.send_message.v3 = robot.Chassis.Get_T_mpc(3);
-    robot.Vofa_TCP.send_message.v4 = robot.Chassis.mpc_robot->StepDelta(0);
-    robot.Vofa_TCP.send_message.v5 = robot.Chassis.mpc_robot->StepDelta(1);
-    robot.Vofa_TCP.send_message.v6 = robot.Chassis.mpc_robot->StepDelta(2);
-    robot.Vofa_TCP.send_message.v7 = robot.Chassis.mpc_robot->StepDelta(3);
+    // robot.Vofa_TCP.send_message.v0 = robot.Chassis.Get_T_mpc(0);
+    // robot.Vofa_TCP.send_message.v1 = robot.Chassis.Get_T_mpc(1);
+    // robot.Vofa_TCP.send_message.v2 = robot.Chassis.Get_T_mpc(2);
+    // robot.Vofa_TCP.send_message.v3 = robot.Chassis.Get_T_mpc(3);
+    // robot.Vofa_TCP.send_message.v4 = robot.Chassis.mpc_robot->StepDelta(0);
+    // robot.Vofa_TCP.send_message.v5 = robot.Chassis.mpc_robot->StepDelta(1);
+    // robot.Vofa_TCP.send_message.v6 = robot.Chassis.mpc_robot->StepDelta(2);
+    // robot.Vofa_TCP.send_message.v7 = robot.Chassis.mpc_robot->StepDelta(3);
 
-    robot.Vofa_TCP.send_message.v8 = robot.Chassis.Get_mpc_ok()   ? 1.0f : 0.0f;
-    robot.Vofa_TCP.send_message.v9 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
-    robot.Vofa_TCP.send_message.v10 = robot.Chassis.Get_mpc_rebuild_ok() ? 1.0f : 0.0f;
-    robot.Vofa_TCP.send_message.v11 = robot.Chassis.Get_mpc_riccati_ok() ? 1.0f : 0.0f;
+    // robot.Vofa_TCP.send_message.v8 = robot.Chassis.Get_mpc_ok()   ? 1.0f : 0.0f;
+    // robot.Vofa_TCP.send_message.v9 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
+    // robot.Vofa_TCP.send_message.v10 = robot.Chassis.Get_mpc_rebuild_ok() ? 1.0f : 0.0f;
+    // robot.Vofa_TCP.send_message.v11 = robot.Chassis.Get_mpc_riccati_ok() ? 1.0f : 0.0f;
+
+    // ===== 10 状态 MPC 上电调试：支持力极性 / 动态力矩边界 / MPC 输出 / 软约束 =====
+    // 支持力估计：站稳时两条腿都应为正，约 +180~220 N；为负说明极性反了，FRIC_BOUND_ON 必须先关
+    robot.Vofa_TCP.send_message.v0  = robot.Chassis.Get_mpc_N_est(0);   // 左腿 N [N]
+    robot.Vofa_TCP.send_message.v1  = robot.Chassis.Get_mpc_N_est(1);   // 右腿 N [N]
+    // MPC 输出力矩，和 v2~v5 放同一张图看是否贴边
+    robot.Vofa_TCP.send_message.v2  = robot.Chassis.Get_T_mpc(0);       // T_wl
+    robot.Vofa_TCP.send_message.v3  = robot.Chassis.Get_T_mpc(1);       // T_wr
+    robot.Vofa_TCP.send_message.v4  = robot.Chassis.Get_T_mpc(2);       // T_bl
+    robot.Vofa_TCP.send_message.v5  = robot.Chassis.Get_T_mpc(3);       // T_br
+    // 求解状态：used=0 表示本拍退回了 LQR；迭代数偏大（几十以上）对应求解耗时尖峰
+    robot.Vofa_TCP.send_message.v6 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
+    robot.Vofa_TCP.send_message.v7 = static_cast<float>(robot.Chassis.mpc_robot->Iterations());
+    // 跟随云台模式下 QP 失败的累计次数，切换底盘模式时清零
+    robot.Vofa_TCP.send_message.v8 = static_cast<float>(robot.Chassis.Get_mpc_fail_count());
+
+    // // 动态力矩边界：轮通道上下界对称，只看上界；髋通道随 F0 / trim 不对称，上下界都看
+    // robot.Vofa_TCP.send_message.v0  = robot.Chassis.Get_mpc_u_hi(0);    // T_wl 上界（≈ μ·N·R_w）
+    // robot.Vofa_TCP.send_message.v1  = robot.Chassis.Get_mpc_u_hi(1);    // T_wr 上界
+    // robot.Vofa_TCP.send_message.v2  = robot.Chassis.Get_mpc_u_lo(2);    // T_bl 下界
+    // robot.Vofa_TCP.send_message.v3  = robot.Chassis.Get_mpc_u_hi(2);    // T_bl 上界
+    // robot.Vofa_TCP.send_message.v4  = robot.Chassis.Get_mpc_u_lo(3);    // T_br 下界
+    // robot.Vofa_TCP.send_message.v5  = robot.Chassis.Get_mpc_u_hi(3);    // T_br 上界
 }
 
 float get_mahony_pitch()

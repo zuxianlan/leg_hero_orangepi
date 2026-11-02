@@ -174,6 +174,10 @@ public:
     inline float Get_mpc_u_lo(int i) const  { return mpc_u_lo[i]; }   // MPC 动态力矩下界 [Nm]
     inline float Get_mpc_u_hi(int i) const  { return mpc_u_hi[i]; }   // MPC 动态力矩上界 [Nm]
     inline float Get_mpc_N_est(int i) const { return mpc_N_est[i]; }  // 左/右腿地面支持力估计 [N]
+    inline uint32_t Get_mpc_fail_count() const { return mpc_fail_count; }   // 计数开启以来 QP 求解失败的次数
+    // 以下两个必须在 rx_mutex 锁内调用（1 ms 回调里调即可），与 MPC 线程的累加互斥
+    inline void Set_mpc_fail_count_on(bool on) { mpc_fail_count_on = on; }
+    inline void Reset_mpc_fail_count()         { mpc_fail_count = 0; }
 
 private:
     KalmanFilter kf = KalmanFilter(2,2,0,nullptr,nullptr,nullptr,nullptr,nullptr);
@@ -230,6 +234,8 @@ private:
     float mpc_u_hi[4] = {static_cast<float>(MPC_CFG::U_MAX[0]), static_cast<float>(MPC_CFG::U_MAX[1]),
                          static_cast<float>(MPC_CFG::U_MAX[2]), static_cast<float>(MPC_CFG::U_MAX[3])};
     float mpc_N_est[2] = {};     // 左/右腿地面支持力估计（调试用）
+    bool     mpc_fail_count_on = false;   // 是否累计 QP 失败次数（由 Robot 按底盘模式设置）
+    uint32_t mpc_fail_count = 0;          // QP 求解失败次数（调试用）
 
     // 记录本拍实际生效的通道命令，供下一拍 Δu 约束当起点
     inline void Record_MPC_History(float wl, float wr, float hl, float hr)

@@ -208,6 +208,7 @@ public:
 
     class_Chassis Chassis;
     Enum_chassis_mode chassis_mode;
+    Enum_chassis_mode last_chassis_mode = CHASSIS_ZERO_FORCE;   // 上一拍的底盘模式，用于检测模式切换
 
     void Init();
 

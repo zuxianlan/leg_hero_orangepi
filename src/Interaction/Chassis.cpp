@@ -991,6 +991,7 @@ void class_Chassis::MPC_Robot_Calc()
         for (int i = 0; i < 4; ++i) T_mpc[i] = static_cast<float>(u(i));
         mpc_ok = ok;
         mpc_valid = valid;
+        if (!ok && mpc_fail_count_on) { ++mpc_fail_count; }
         mpc_stamp = std::chrono::steady_clock::now();   // 1 ms 侧据此判断输出是否过期
     }
 }

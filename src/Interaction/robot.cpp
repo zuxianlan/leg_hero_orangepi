@@ -439,6 +439,14 @@ void Robot::Chassis_Control()
         chassis_mode = CHASSIS_CHECK_IN;                   // 入场检测模式
     }
 
+    // MPC 失败计数：只在跟随云台模式下累计，模式切换时清零
+    if (chassis_mode != last_chassis_mode)
+    {
+        Chassis.Reset_mpc_fail_count();
+        last_chassis_mode = chassis_mode;
+    }
+    Chassis.Set_mpc_fail_count_on(chassis_mode == CHASSIS_INFANTRY_FOLLOW_GIMBAL_YAW);
+
     // --- 3. 根据底盘模式设置目标状态并计算控制量 --- 
     if (chassis_mode == CHASSIS_ZERO_FORCE)
     {
