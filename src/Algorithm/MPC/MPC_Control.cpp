@@ -52,6 +52,8 @@
 #include "MPC_Control.h"
 #include <iostream>
 #include <numbers>
+#include <algorithm>
+#include <cmath>
 
 /* Define --------------------------------------------------------------------*/
 
@@ -65,6 +67,51 @@
 
 using namespace Eigen;
 using namespace qpOASES;
+
+
+/* ---------------- 腿长数据集（与 HerKules_VOCAL_SJ_LQR_v5_14dim.m 的 Leg_data_l 一致）------- */
+namespace {
+
+constexpr int kLegN = 24;
+
+// 第一列：腿长 L [m]；第二列：轮心到腿质心距离 l_w [m]
+constexpr double kLegL[kLegN] = {
+    0.1200,0.1317,0.1435,0.1552,0.1670,0.1787,0.1904,0.2022,
+    0.2139,0.2257,0.2374,0.2491,0.2609,0.2726,0.2843,0.2961,
+    0.3078,0.3196,0.3313,0.3430,0.3548,0.3665,0.3783,0.3900};
+constexpr double kLegW[kLegN] = {
+    0.10324,0.10653,0.10979,0.11295,0.11662,0.12042,0.12438,0.12851,
+    0.13273,0.13732,0.14159,0.14606,0.15072,0.15541,0.16018,0.16505,
+    0.17012,0.17493,0.17994,0.18499,0.19014,0.19529,0.20052,0.20576};
+
+inline double LegClamp(double L) { return std::clamp(L, kLegL[0], kLegL[kLegN - 1]); }
+
+inline int LegIndex(double L)
+{
+    int i = 0;
+    while (i < kLegN - 2 && kLegL[i + 1] < L) ++i;
+    return i;
+}
+
+// l_w(L)：分段线性插值
+double LegLw(double L)
+{
+    L = LegClamp(L);
+    const int i = LegIndex(L);
+    const double t = (L - kLegL[i]) / (kLegL[i + 1] - kLegL[i]);
+    return kLegW[i] + t * (kLegW[i + 1] - kLegW[i]);
+}
+
+// lambda = d(l_w)/dL：取当前区间的斜率
+double LegLambda(double L)
+{
+    L = LegClamp(L);
+    const int i = LegIndex(L);
+    return (kLegW[i + 1] - kLegW[i]) / (kLegL[i + 1] - kLegL[i]);
+}
+
+} // namespace
+
 
 /**
  * @brief 初始化 MPC 模型、权重、约束，并预计算与 x0 无关的矩阵
@@ -111,24 +158,8 @@ void MPC_Controller::MPC_Init()
     R << 0.9, 0.0,
          0.0, 0.9;
 
-    // 离散状态矩阵：roll/height 两路积分，height_rate 带阻尼
-    A << 1.0, dt_mpc, 0.0, 0.0,
-         0.0, 1.0, 0.0, 0.0,
-         0.0, 0.0, 1.0, dt_mpc,
-         0.0, 0.0, 0.0, 1.0 - (dt_mpc * b / m);
-
-    // 离散控制矩阵：差模→roll，共模→height
-    B << 0.0, 0.0,
-         -(r * dt_mpc / I_r), r * dt_mpc / I_r,
-         0.0, 0.0,
-         dt_mpc / m, dt_mpc / m;
-
-    // A/B/Q/R/F 都设置完之后再构建
-    BuildPredictionMatrices();
-    BuildHessianMatrices();
-
-    // 如果之前已经初始化过 QP，参数改了要让它重新初始化
-    is_initialized = 0;
+    // 4 维模型（横滚/高度）由腿长决定：先按标称腿长建一次，之后随腿长在线重建
+    UpdateModel(0.18, 0.18);
 }
 /**
  * @brief 构造函数：分配矩阵维度并创建 QP 求解器
@@ -185,7 +216,7 @@ MPC_Controller::MPC_Controller(const int n, const int p, const int y, const int 
 
     // qp = QProblem(N * p, 2 * N * (n +p));
     // 30 个变量，0 个一般约束
-    qp = QProblem(N * p, 0);
+    qp = SQProblem(N * p, 0);
     Options options;
     // 实时运行可改为 PL_NONE
     options.printLevel = PL_LOW;
@@ -386,8 +417,128 @@ void MPC_Controller::initialize_qp()
  *     [u0(0), u0(1), u1(0), u1(1), ..., u14(0), u14(1)]
  * 调用方只应使用前 p 个（u0），然后下一周期重新求解。
  */
+/**
+ * @brief 由腿长重建 4 维模型（横滚/高度），并重建 M/C/H
+ *
+ * 公式来源：HerKules_VOCAL_SJ_LQR_v5_14dim.m 的 Step 1.5
+ *   先在 q=[l_l;l_r] 下写 M2*ddq + D2*dq + K2*q = [F_l;F_r]，再变换到 [alpha;H]
+ *   M2 = 质量阵（机体 + 腿质心竖直动能 + 横滚惯量平行轴项）
+ *   D2 = d_l*I（腿轴向粘性阻尼）
+ *   K2 = -k_alpha/(4*R_leg^2)*[1 -1; -1 1]（重力负刚度，倒立摆）
+ *   A4_pos = -T*M2^-1*K2*T^-1, A4_vel = -T*M2^-1*D2*T^-1, B4_acc = T*M2^-1
+ *
+ * 状态顺序 [roll, droll, height, dheight]，输入 [F_l, F_r]
+ */
+void MPC_Controller::UpdateModel(double L_l, double L_r)
+{
+    const double lwl = LegLw(L_l);
+    const double lwr = LegLw(L_r);
+    const double lam_l = LegLambda(L_l);
+    const double lam_r = LegLambda(L_r);
+
+    // ---- 14 维 Step 1.5：横滚/高度 4 维块 ----
+    const double H0 = 0.5 * (L_l + L_r);
+    const double I_alpha = I_roll
+                         + m_b * (H0 + l_c) * (H0 + l_c)
+                         + m_l * (lwl * lwl + lwr * lwr)
+                         + m_l * R_leg * R_leg * (lam_l * lam_l + lam_r * lam_r);
+    const double k_alpha = m_b * g_n * (H0 + l_c) + m_l * g_n * (lwl + lwr);
+    const double M_ha = m_l * R_leg * (lam_r * lam_r - lam_l * lam_l);
+
+    Eigen::Matrix2d J;
+    J << 1.0, -1.0,
+        -1.0, 1.0;
+
+    Eigen::Matrix2d M2;
+    M2 << m_b / 4.0 + m_l * lam_l * lam_l - M_ha / (2.0 * R_leg), m_b / 4.0,
+          m_b / 4.0, m_b / 4.0 + m_l * lam_r * lam_r + M_ha / (2.0 * R_leg);
+    M2 += (I_alpha / (4.0 * R_leg * R_leg)) * J;
+
+    const Eigen::Matrix2d D2 = d_l * Eigen::Matrix2d::Identity();
+    const Eigen::Matrix2d K2 = -(k_alpha / (4.0 * R_leg * R_leg)) * J;
+
+    // [alpha; H] = T_ah * [l_l; l_r]
+    Eigen::Matrix2d T_ah;
+    T_ah << -1.0 / (2.0 * R_leg), 1.0 / (2.0 * R_leg),
+             0.5,                  0.5;
+
+    const Eigen::Matrix2d M2i = M2.inverse();
+    const Eigen::Matrix2d T_ahi = T_ah.inverse();
+
+    const Eigen::Matrix2d A4_pos = -T_ah * M2i * K2 * T_ahi;
+    const Eigen::Matrix2d A4_vel = -T_ah * M2i * D2 * T_ahi;
+    const Eigen::Matrix2d B4_acc =  T_ah * M2i;
+
+    // ---- 连续模型 ----
+    Eigen::Matrix4d Ac = Eigen::Matrix4d::Zero();
+    Eigen::Matrix<double, 4, 2> Bc = Eigen::Matrix<double, 4, 2>::Zero();
+
+    Ac(0, 1) = 1.0;
+    Ac(2, 3) = 1.0;
+    Ac(1, 0) = A4_pos(0, 0);  Ac(1, 2) = A4_pos(0, 1);
+    Ac(1, 1) = A4_vel(0, 0);  Ac(1, 3) = A4_vel(0, 1);
+    Ac(3, 0) = A4_pos(1, 0);  Ac(3, 2) = A4_pos(1, 1);
+    Ac(3, 1) = A4_vel(1, 0);  Ac(3, 3) = A4_vel(1, 1);
+
+    Bc(1, 0) = B4_acc(0, 0);  Bc(1, 1) = B4_acc(0, 1);
+    Bc(3, 0) = B4_acc(1, 0);  Bc(3, 1) = B4_acc(1, 1);
+
+    // ---- 离散化：二阶 Taylor（与 10 维 MPC 一致）----
+    const double dt2 = double(dt_mpc) * double(dt_mpc);
+    const double dtd = double(dt_mpc);
+    const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
+    const Eigen::Matrix4d Ad = I4 + Ac * dtd + 0.5 * Ac * Ac * dt2;
+    const Eigen::Matrix<double, 4, 2> Bd =
+        (I4 * dtd + 0.5 * Ac * dt2) * Bc;
+
+    A = Ad;
+    B = Bd;
+
+    BuildPredictionMatrices();
+    BuildHessianMatrices();
+
+    model_l_ = L_l;
+    model_r_ = L_r;
+    model_ready_ = true;
+
+    // 不重置 is_initialized：SQProblem::hotstart 带 H 参数，可直接用新 H 复用工作集
+    //（比重开 QP 快很多）。若 hotstart 失败，MPC_Calculate 里会自动走 initialize_qp()。
+}
+
+void MPC_Controller::Set_Leg_Length(double L_l, double L_r)
+{
+    leg_l_ = L_l;
+    leg_r_ = L_r;
+}
+
+/**
+ * @brief 每个控制周期调用一次：按需重建模型 -> 构建 g -> 求解 QP -> 输出 u_out
+ *
+ * 与旧版的区别：
+ *   1) 模型 A/B 不再是手写常数，而是由腿长在线重建（腿长变化 >2mm 时）
+ *   2) H 随模型变化，求解器从 QProblem 换成 SQProblem，hotstart 要带上 H
+ *   3) 按模型周期限速：调用快于 dt_mpc 时直接返回上次的解，保证"周期=模型 dt"
+ */
 void MPC_Controller::MPC_Calculate()
 {
+    // ---- 按模型周期限速（避免 1ms 调用、2ms 模型的不匹配）----
+    const auto now = std::chrono::steady_clock::now();
+    if (solved_once_ &&
+        std::chrono::duration<double>(now - last_solve_).count() < 0.8 * double(dt_mpc))
+    {
+        return;   // 还没到下一次求解时刻，u_out 保持上一拍
+    }
+    last_solve_ = now;
+    solved_once_ = true;
+
+    // ---- 腿长变化 -> 重建模型 + H ----
+    if (!model_ready_ ||
+        std::fabs(leg_l_ - model_l_) > 2e-3 ||
+        std::fabs(leg_r_ - model_r_) > 2e-3)
+    {
+        UpdateModel(leg_l_, leg_r_);
+    }
+
     // 每周期更新 g
     BuildGradientVector();
     // 本项目 lb/ub 不变
@@ -396,25 +547,23 @@ void MPC_Controller::MPC_Calculate()
     // 已初始化：热启动
     if (is_initialized)
     {
-        // 最大 working set 迭代次数
         int nWSR = 100;
 
-        // 复用上一拍工作集，只更新 g/bounds
+        // SQProblem：H 可能变化，hotstart 需要传入 H
         solver_status = qp.hotstart(
-            g.data(), lb.data(), ub.data(),
+            H.data(), g.data(), nullptr,
+            lb.data(), ub.data(),
             nullptr, nullptr, nWSR
         );
 
         // 失败则重新 init
         if (solver_status != qpOASES::SUCCESSFUL_RETURN)
         {
-            // 兜底：重新初始化
             initialize_qp();
         }
     }
     else
     {
-        // 第一次调用
         initialize_qp();
     }
 
@@ -423,5 +572,4 @@ void MPC_Controller::MPC_Calculate()
 
     // 下周期可以 hotstart
     is_initialized = true;
-
 }

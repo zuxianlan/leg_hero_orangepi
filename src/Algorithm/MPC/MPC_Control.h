@@ -12,6 +12,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include <Eigen/Dense>
 #include <qpOASES.hpp>
+#include <chrono>
 /* Define --------------------------------------------------------------------*/
 
 /* Enum ----------------------------------------------------------------------*/
@@ -58,6 +59,9 @@ public:
 
     void MPC_Calculate();
 
+    // 每拍写入当前腿长（A/B/H 随腿长重建）
+    void Set_Leg_Length(double L_l, double L_r);
+
 private:
     int n; 
     int p; 
@@ -66,7 +70,7 @@ private:
     int is_initialized;
     int solver_iterations{};
 
-    qpOASES::QProblem qp;
+    qpOASES::SQProblem qp;
     qpOASES::returnValue solver_status;
 
     Eigen::MatrixXd M; 
@@ -81,13 +85,25 @@ private:
     Eigen::VectorXd uba;
 
     Eigen::VectorXd last_control;
-     // MPC 模型参数
-    float dt_mpc = 0.002;
-    float I_r = 1.5;
-    float r = 0.16;
-    float m = 25.0;
-    float k = 0;
-    float b = -1000;
+
+    // ===== 4 维模型参数（来自 HerKules_VOCAL_SJ_LQR_v5_14dim.m 的 Step 1.5）=====
+    float dt_mpc = 0.002f;      // 离散步长 [s]，必须与实际求解周期一致
+    float I_roll = 1.5f;        // 机体绕自身质心的横滚转动惯量 [kg m^2]  ★未实测，待标定
+    float R_leg  = 0.20f;       // 左右腿受力线横向间距/2（横滚力臂）[m]
+    float d_l    = 4.0f;        // 单腿沿腿方向等效粘性阻尼 [N s/m]      ★未辨识
+    float l_c    = 0.037f;      // 机体质心到腿部关节中心点距离 [m]
+    float m_b    = 35.542f;     // 机体质量 [kg]
+    float m_l    = 2.6183599f;  // 单腿质量 [kg]
+    float g_n    = 9.81f;       // 重力加速度 [m/s^2]
+
+    double leg_l_ = 0.18, leg_r_ = 0.18;    // 外部每拍写入的当前腿长
+    double model_l_ = 0.0, model_r_ = 0.0;  // 当前模型所用腿长
+    bool   model_ready_ = false;            // 模型是否已建立
+    bool   solved_once_ = false;            // 是否已经求解过至少一次
+    std::chrono::steady_clock::time_point last_solve_{};  // 上次求解时刻（按模型周期限速）
+
+    // 由腿长重建 4 维模型（14 维 Step 1.5 的横滚/高度块）+ 离散化 + M/C/H
+    void UpdateModel(double L_l, double L_r);
 
     void initialize_qp();
 };

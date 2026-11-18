@@ -403,6 +403,7 @@ void class_Chassis::Control_leg()
         MPC_body.x_ref(i*4+2) = current_ref_height;
         MPC_body.x_ref(i*4+3) = current_ref_dheight;
     }
+    MPC_body.Set_Leg_Length(left_leg.Get_L0(), right_leg.Get_L0());
     MPC_body.MPC_Calculate();
 
     spring_forcel = 130 - 10*(1 - (left_leg.Get_L0()-0.1)/0.24);
@@ -510,6 +511,7 @@ void class_Chassis::UP_Staris_Control_leg()
         MPC_body.x_ref(i*4+2) = current_ref_height;
         MPC_body.x_ref(i*4+3) = current_ref_dheight;
     }
+    MPC_body.Set_Leg_Length(left_leg.Get_L0(), right_leg.Get_L0());
     MPC_body.MPC_Calculate();
     left_leg.Set_Tp(-1.0 - PID_tp_omega.Get_Out());
     T_L = 0.0;
@@ -742,6 +744,7 @@ void class_Chassis::MPC_Body_Calc()
         MPC_body.x_ref(i*4+3) = Target_dheight;
     }
 
+    MPC_body.Set_Leg_Length(left_leg.Get_L0(), right_leg.Get_L0());
     MPC_body.MPC_Calculate();
     
 
