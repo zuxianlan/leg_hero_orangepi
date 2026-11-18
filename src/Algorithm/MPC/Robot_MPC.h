@@ -52,7 +52,7 @@ namespace MPC_CFG
     constexpr double LEG_MIN      = 0.12;
     constexpr double LEG_MAX      = 0.39;
     constexpr double THETA_AT_MIN = 0.40;    // L = 0.107 时的摆角限幅
-    constexpr double THETA_AT_MAX = 0.32;    // L = 0.39 时的摆角限幅
+    constexpr double THETA_AT_MAX = 0.30;    // L = 0.39 时的摆角限幅
 
     // ---- 4) 机体俯仰限幅，单位 rad ----
     constexpr double PITCH_MAX = 0.30;
@@ -95,7 +95,7 @@ class Robot_MPC
 public:
     static constexpr int n  = 10;   // 状态个数
     static constexpr int p  = 4;    // 控制个数
-    static constexpr int NP = 20;   // 预测步数：15 * 8ms = 120ms
+    static constexpr int NP = 17;   // 预测步数：15 * 8ms = 120ms
 
     // ===== 状态约束（软约束）：{状态下标, 腿长来源, 下限, 上限, 松弛线性权, 松弛二次权} =====
     //   leg = -1 → 用固定 lo/hi

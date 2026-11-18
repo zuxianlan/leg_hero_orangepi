@@ -355,7 +355,7 @@ void Robot::Init()
     Chassis.mc_02 = &mc02_SerialPort;
     Chassis.Init();
 
-    Slope_X.Init(1.0f/5000.0f, SLOPE_X_DECREASE_BASE, Slope_First_REAL);
+    Slope_X.Init(1.0f/2000.0f, SLOPE_X_DECREASE_BASE, Slope_First_REAL);
     Slope_X.Set_Max_Target_Up_Delta(2.5f);
     Slope_X.Set_Max_Target_Down_Delta(2.5f);
     Slope_X.Set_Adaptive_Gain(0.20f);

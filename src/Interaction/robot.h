@@ -59,7 +59,7 @@
 #define RC_to_Chassis_Spin_Pitch_Gain 0.1f
 #define Spin_Pitch_Angle_Offset 2.5f   
 
-#define MAX_Velocity 2.5f
+#define MAX_Velocity 3.0f
 #define MAX_Velocity_Y 2.0f
 
 // 翻倒确认时间 [ms]：从 NORMAL 进入 OVER_TURN 后，越界条件需持续这么久才判为真翻倒
@@ -71,8 +71,8 @@
 //   腿长 >= SLOPE_X_LEG_LONG  时系数为 SLOPE_X_SCALE_LONG，中间线性插值
 #define SLOPE_X_LEG_SHORT       0.12f
 #define SLOPE_X_LEG_LONG        0.3f
-#define SLOPE_X_SCALE_LONG      0.70f //起步慢调大
-#define SLOPE_X_DECREASE_BASE   (1.0f / 100.0f)
+#define SLOPE_X_SCALE_LONG      0.90f //起步慢调大
+#define SLOPE_X_DECREASE_BASE   (1.0f / 50.0f)
 
 /* Variable && Struct --------------------------------------------------------*/
 

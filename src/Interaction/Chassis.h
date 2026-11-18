@@ -89,7 +89,7 @@ public:
     // 10 状态全状态线性 MPC：替代 LQR 输出 T[0..3]（轮矩L/R + 髋矩L/R）
     std::unique_ptr<Robot_MPC> mpc_robot;
     bool mpc_enable = true;      // ★ 调试开关：false = 完全退回原 LQR
-    bool mpc_spin_enable = true; // ★ 调试开关：false = 小陀螺时仍用 LQR 小陀螺分支（MPC 小陀螺权重调试期间用来 A/B）
+    bool mpc_spin_enable = false; // ★ 调试开关：false = 小陀螺时仍用 LQR 小陀螺分支（MPC 小陀螺权重调试期间用来 A/B）
     float mpc_timeout = static_cast<float>(2.0 * MPC_CFG::DT);  // 输出新鲜度上限 [s]：超过 2 个 MPC 周期未更新就退回 LQR
 
     Enum_chassis_fsm_mode chassis_fsm_mode;

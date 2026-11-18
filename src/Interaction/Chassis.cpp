@@ -164,8 +164,8 @@ void class_Chassis::feedback_update()
 
     err[0] = (X_filter - Target_X);                                      // 水平位移误差
     err[1] = (Velocity_filter - Target_Velocity);                        // 水平速度误差
-    //err[2] = 0;                                                          // 偏航角误差（当前禁用）
-    err[2] = Max_Output((Yaw_Angle - Target_Yaw), 1.25f); 
+    err[2] = 0;                                                          // 偏航角误差（当前禁用）
+    //err[2] = Max_Output((Yaw_Angle - Target_Yaw), 1.25f); 
     err[3] = (INS->gyro[2] - Target_Omega);                              // 偏航角速度误差
     err[4] = Max_Output((left_leg.Get_theta() - Target_Theta), 0.5);     // 左腿角度误差（限幅±0.5）
     err[5] = (left_leg.Get_dtheta() - 0);                                // 左腿角速度误差
@@ -612,7 +612,8 @@ void class_Chassis::Self_Observe()
     else if (slip_active) mode = KF_Mode::Slip;
 
     kf.Set_Mode(mode);
-    kf.Set_Z(mode == KF_Mode::Slip ? kf.x_hat(0) : average_speed,INS->MotionAccel_b[1]); //打滑时，使用KF估计速度x_hat(0)
+    //kf.Set_Z(mode == KF_Mode::Slip ? kf.x_hat(0) : average_speed,INS->MotionAccel_b[1]); //打滑时，使用KF估计速度x_hat(0)
+    kf.Set_Z(mode == KF_Mode::Slip ? kf.x_hat(0) : average_speed,0.0f); //打滑时，使用KF估计速度x_hat(0)
     kf.Predict();
     kf.Update();
 
