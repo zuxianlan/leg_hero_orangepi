@@ -702,24 +702,40 @@ void class_Chassis::Ground_Detection()
 
 void class_Chassis::MPC_Body_Calc()
 {
-    if (fabs(Target_height - last_Target_height) > 0.001f) 
+    // ================= 高度参考：一阶速率限幅 =================
+    // 为什么不用五次多项式规划器：
+    //   MoveTo(Now_height, Target_height, Now_dheight, ...) 的起始速度取的是【实测】Now_dheight，
+    //   模式切换/腿正在快速伸缩时该值可达 1 m/s 量级，五次多项式会严重过冲：
+    //   实测目标 0.13 时 current_ref_height 冲到了 0.36，MPC 于是把腿一路顶到机械极限 0.39。
+    //   速率限幅的参考只朝目标单调移动，永远不可能过冲。
     {
-        // ★ 规划时长 0.05s -> 0.5s：22cm 的移动若只用 50ms，峰值加速度要 500 m/s^2，
-        //   需要的腿力上千牛，必然把 MPC 打到 ±150 限幅 -> 饱和 -> 超调振荡
+        const float vmax = 0.25f;              // 参考最大变化速度 [m/s]
+        const float step = vmax * 1.0e-3f;     // 本函数 1ms 调一次
+        if      (current_ref_height < Target_height - step) current_ref_height += step;
+        else if (current_ref_height > Target_height + step) current_ref_height -= step;
+        else                                                current_ref_height  = Target_height;
+
+        current_ref_dheight = 0.0f;            // 先关掉速度前馈，排除干扰
+        last_Target_height  = Target_height;
+    }
+
+    /* ================= 原五次多项式规划（保留备查）=================
+    if (fabs(Target_height - last_Target_height) > 0.001f)
+    {
         height_planner.MoveTo(Now_height, Target_height, Now_dheight, Target_dheight, 0.5f);
         last_Target_height = Target_height;
     }
 
-    // 本函数在 1kHz 任务里每 1ms 调一次；Chassis::dt 是 0.002（为其它 2ms 场景准备），
-    // 若直接用 dt 会让规划器快进 2 倍，所以这里显式用 1ms
-    if (height_planner.is_planning) 
+    if (height_planner.is_planning)
     {
         height_planner.Step(1.0e-3f, current_ref_height, current_ref_dheight);
-    } else 
+    }
+    else
     {
         current_ref_height = Target_height;
         current_ref_dheight = 0.0f;
     }
+    ============================================================== */
 
     MPC_body.x_ref.setZero();
 
