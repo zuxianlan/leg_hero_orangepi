@@ -145,18 +145,21 @@ void MPC_Controller::MPC_Init()
     // 状态权重 Q：roll/height 大，速度项小
     Q << 1.5e7, 0.0, 0.0, 0.0,
          0.0, 1.0e3, 0.0, 0.0,
-         0.0, 0.0, 1.5e7, 0.0,
+         0.0, 0.0, 6.5e7, 0.0,
          0.0, 0.0, 0.0, 1.0e3;
 
     // 终端权重 F：比 Q 大一个数量级
     F << 1.5e8, 0.0, 0.0, 0.0,
          0.0, 1.0e4, 0.0, 0.0,
-         0.0, 0.0, 1.5e8, 0.0,
+         0.0, 0.0, 6.5e8, 0.0,
          0.0, 0.0, 0.0, 1.0e4;
 
-    // 控制权重 R：左右腿力惩罚
-    R << 0.9, 0.0,
-         0.0, 0.9;
+    // 控制权重 R：左右腿力惩罚 ★带宽旋钮
+    //   F 改成 Riccati 解以后，同样的 Q 会让增益跳 3~6 倍，所以这里从 0.9 提到 10，
+    //   把高度闭环带宽拉回原来的量级（实测 K_h 2267 N/m，ω_n≈7.9 rad/s，ζ≈0.66）。
+    //   实车若仍抖 -> R 继续加大（30/60）；若偏软 -> R 减小（3/1）。
+    R << 10.0, 0.0,
+         0.0, 10.0;
 
     // 4 维模型（横滚/高度）由腿长决定：先按标称腿长建一次，之后随腿长在线重建
     UpdateModel(0.18, 0.18);
@@ -493,6 +496,54 @@ void MPC_Controller::UpdateModel(double L_l, double L_r)
 
     A = Ad;
     B = Bd;
+
+    // ---- 终端代价 F：取离散 Riccati 解 P（无穷时域最优 cost-to-go）----
+    //  P = Q + A'PA - A'PB(R + B'PB)^-1 B'PA
+    //  作用：
+    //    1) 无约束时 MPC 的解 = 无穷时域 LQR，F 不再是调参量
+    //    2) 闭环阻尼由 Q/R 决定（本例 ζ≈0.66），不再靠终端权重硬撑
+    //    3) N 可以缩短（F 已经是真实 cost-to-go），而且换 dt 时增益基本不变
+    {
+        // 全部用固定尺寸矩阵：避免每轮迭代的堆分配（动态矩阵版要 150us，固定版只要几 us）
+        const Eigen::Matrix4d Af = A.cast<double>();
+        const Eigen::Matrix<double, 4, 2> Bf = B.cast<double>();
+        const Eigen::Matrix4d Qf = Q.cast<double>();
+        const Eigen::Matrix2d Rf = R.cast<double>();
+
+        // 用上一次的解热启动（腿长变化很慢，通常几次迭代就够）
+        Eigen::Matrix4d P = Qf;
+        if (P_riccati_.rows() == 4) P = P_riccati_;   // 热启动
+        double rel = 1.0;
+
+        for (int it = 0; it < (P_riccati_.rows() == 4 ? 80 : 400); ++it)
+        {
+            const Eigen::Matrix<double, 2, 4> BtP = Bf.transpose() * P;
+            const Eigen::Matrix2d S   = Rf + BtP * Bf;
+            const Eigen::Matrix<double, 2, 4> Kk  = S.ldlt().solve(BtP * Af);
+            const Eigen::Matrix4d Acl = Af - Bf * Kk;
+            const Eigen::Matrix4d Pn  = Qf + Acl.transpose() * P * Acl
+                                           + Kk.transpose() * Rf * Kk;
+
+            const double err = (Pn - P).cwiseAbs().maxCoeff();
+            const double sc  = 1.0 + P.cwiseAbs().maxCoeff();
+            P = Pn;
+            rel = err / sc;
+
+            // P 的量级 1e9，双精度下限约 1e-6；1e-4 的相对误差对增益的影响 <0.01%，足够
+            if (rel < 1e-4) break;
+        }
+
+        if (P.allFinite())
+        {
+            F = P;                 // ★ 终端代价 = Riccati 解
+            P_riccati_ = P;
+            riccati_ok_ = (rel < 1e-3);
+        }
+        else
+        {
+            riccati_ok_ = false;   // 发散时保留上一次的 F，不让 QP 拿到 NaN
+        }
+    }
 
     BuildPredictionMatrices();
     BuildHessianMatrices();
