@@ -360,15 +360,32 @@ void Vofa_start()
     // robot.Vofa_TCP.send_message.v0  = robot.Chassis.Get_mpc_N_est(0);   // 左腿 N [N]
     // robot.Vofa_TCP.send_message.v1  = robot.Chassis.Get_mpc_N_est(1);   // 右腿 N [N]
     // MPC 输出力矩，和 v2~v5 放同一张图看是否贴边
-    robot.Vofa_TCP.send_message.v2  = robot.Chassis.Get_T_mpc(0);       // T_wl
-    robot.Vofa_TCP.send_message.v3  = robot.Chassis.Get_T_mpc(1);       // T_wr
-    robot.Vofa_TCP.send_message.v4  = robot.Chassis.Get_T_mpc(2);       // T_bl
-    robot.Vofa_TCP.send_message.v5  = robot.Chassis.Get_T_mpc(3);       // T_br
-    // 求解状态：used=0 表示本拍退回了 LQR；迭代数偏大（几十以上）对应求解耗时尖峰
-    robot.Vofa_TCP.send_message.v6 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
-    robot.Vofa_TCP.send_message.v7 = static_cast<float>(robot.Chassis.mpc_robot->Iterations());
-    // 跟随云台模式下 QP 失败的累计次数，切换底盘模式时清零
-    robot.Vofa_TCP.send_message.v8 = static_cast<float>(robot.Chassis.Get_mpc_fail_count());
+    // ===== 【已停用，保留备查】10 状态 MPC 力矩 / 求解状态 =====
+    // robot.Vofa_TCP.send_message.v2  = robot.Chassis.Get_T_mpc(0);       // T_wl
+    // robot.Vofa_TCP.send_message.v3  = robot.Chassis.Get_T_mpc(1);       // T_wr
+    // robot.Vofa_TCP.send_message.v4  = robot.Chassis.Get_T_mpc(2);       // T_bl
+    // robot.Vofa_TCP.send_message.v5  = robot.Chassis.Get_T_mpc(3);       // T_br
+    // // 求解状态：used=0 表示本拍退回了 LQR；迭代数偏大（几十以上）对应求解耗时尖峰
+    // robot.Vofa_TCP.send_message.v6 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;
+    // robot.Vofa_TCP.send_message.v7 = static_cast<float>(robot.Chassis.mpc_robot->Iterations());
+    // // 跟随云台模式下 QP 失败的累计次数，切换底盘模式时清零
+    // robot.Vofa_TCP.send_message.v8 = static_cast<float>(robot.Chassis.Get_mpc_fail_count());
+
+    // ===== 4 维 MPC 高度环调试（Follow_Gimbal_Control 正常行驶模式）=====
+    // 看四条曲线的相对关系：
+    //   v0(目标) 台阶 -> v1(规划) 平滑 -> v2(实际) 应贴着 v1 走
+    //   v3/v4 是 MPC 输出，若频繁贴 ±150 说明饱和，必须继续放慢 v1 的规划时长
+    //   v5/v6 左右腿长，差得太多说明横滚在抢高度
+    robot.Vofa_TCP.send_message.v0 = robot.Get_Target_height();          // 摇杆原始目标 [m]
+    robot.Vofa_TCP.send_message.v1 = robot.Chassis.current_ref_height;   // 规划器输出的平滑参考 [m]
+    robot.Vofa_TCP.send_message.v2 = robot.Chassis.Get_Heigh();          // 实际平均腿长 [m]
+    robot.Vofa_TCP.send_message.v3 = robot.Chassis.MPC_body.u_out(0);    // 左腿力修正 [N]
+    robot.Vofa_TCP.send_message.v4 = robot.Chassis.MPC_body.u_out(1);    // 右腿力修正 [N]
+    robot.Vofa_TCP.send_message.v5 = robot.Chassis.left_leg.Get_L0();    // 左腿长 [m]
+    robot.Vofa_TCP.send_message.v6 = robot.Chassis.right_leg.Get_L0();   // 右腿长 [m]
+    robot.Vofa_TCP.send_message.v7 = robot.Chassis.left_leg.Get_F0();    // 左腿实际下发力 [N]
+    robot.Vofa_TCP.send_message.v8 = robot.Chassis.Get_mpc_used() ? 1.0f : 0.0f;   // 10 状态 MPC 是否接管
+    robot.Vofa_TCP.send_message.v9 = robot.Chassis.MPC_body.RiccatiOK() ? 1.0f : 0.0f;  // 终端代价 F 是否正常
 
     // // 动态力矩边界：轮通道上下界对称，只看上界；髋通道随 F0 / trim 不对称，上下界都看
     // robot.Vofa_TCP.send_message.v0  = robot.Chassis.Get_mpc_u_hi(0);    // T_wl 上界（≈ μ·N·R_w）

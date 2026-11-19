@@ -704,13 +704,17 @@ void class_Chassis::MPC_Body_Calc()
 {
     if (fabs(Target_height - last_Target_height) > 0.001f) 
     {
-        height_planner.MoveTo(Now_height, Target_height, Now_dheight, Target_dheight, 0.05f); // 0.5����ɶ���?
+        // ★ 规划时长 0.05s -> 0.5s：22cm 的移动若只用 50ms，峰值加速度要 500 m/s^2，
+        //   需要的腿力上千牛，必然把 MPC 打到 ±150 限幅 -> 饱和 -> 超调振荡
+        height_planner.MoveTo(Now_height, Target_height, Now_dheight, Target_dheight, 0.5f);
         last_Target_height = Target_height;
     }
 
+    // 本函数在 1kHz 任务里每 1ms 调一次；Chassis::dt 是 0.002（为其它 2ms 场景准备），
+    // 若直接用 dt 会让规划器快进 2 倍，所以这里显式用 1ms
     if (height_planner.is_planning) 
     {
-        height_planner.Step(dt, current_ref_height, current_ref_dheight);
+        height_planner.Step(1.0e-3f, current_ref_height, current_ref_dheight);
     } else 
     {
         current_ref_height = Target_height;
@@ -740,8 +744,11 @@ void class_Chassis::MPC_Body_Calc()
     {
         MPC_body.x_ref(i*4) = Target_Roll;
         MPC_body.x_ref(i*4+1) = 0.0;
-        MPC_body.x_ref(i*4+2) = Target_height;
-        MPC_body.x_ref(i*4+3) = Target_dheight;
+        // ★ 用规划器的平滑参考，而不是 Target_height（阶跃）
+        //   原来这里直接喂 Target_height，摇杆一改高度就是 10~22cm 的阶跃，
+        //   K_h*0.22 正好等于 u_max=150N，必然饱和 -> 抖 + 回不到原位
+        MPC_body.x_ref(i*4+2) = current_ref_height;
+        MPC_body.x_ref(i*4+3) = current_ref_dheight;
     }
 
     MPC_body.Set_Leg_Length(left_leg.Get_L0(), right_leg.Get_L0());
