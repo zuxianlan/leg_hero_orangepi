@@ -62,6 +62,10 @@ public:
     // 每拍写入当前腿长（A/B/H 随腿长重建）
     void Set_Leg_Length(double L_l, double L_r);
 
+    // 状态突变（倒地自起收腿 / 刚切入正常行驶）后调用：
+    // 清掉 QP 工作集和时间限速，下次 MPC_Calculate 会按当前腿长重建并重新 init
+    void Reset();
+
     // Riccati（终端代价 F）是否正常收敛
     bool RiccatiOK() const { return riccati_ok_; }
 

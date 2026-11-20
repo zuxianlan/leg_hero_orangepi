@@ -148,11 +148,8 @@ void MPC_Controller::MPC_Init()
          0.0, 0.0, 6.5e7, 0.0,
          0.0, 0.0, 0.0, 1.0e3;
 
-    // 终端权重 F：比 Q 大一个数量级
-    F << 1.5e8, 0.0, 0.0, 0.0,
-         0.0, 1.0e4, 0.0, 0.0,
-         0.0, 0.0, 6.5e8, 0.0,
-         0.0, 0.0, 0.0, 1.0e4;
+    // 终端权重 F：★不要在这里调★
+    F = Q;
 
     // 控制权重 R：左右腿力惩罚 ★带宽旋钮
     //   F 改成 Riccati 解以后，同样的 Q 会让增益跳 3~6 倍，所以这里从 0.9 提到 10，
@@ -560,6 +557,19 @@ void MPC_Controller::Set_Leg_Length(double L_l, double L_r)
 {
     leg_l_ = L_l;
     leg_r_ = L_r;
+}
+
+/**
+ * @brief 状态突变后复位：丢弃 QP 工作集、清时间限速、强制按当前腿长重建模型
+ *
+ * 使用场景：倒地自起（收腿会让 h/dh 阶跃）、从其它底盘模式切回正常行驶。
+ * 不复位的话，QP 会带着上一套工作集和旧模型继续算，容易出现大幅瞬态。
+ */
+void MPC_Controller::Reset()
+{
+    is_initialized = 0;    // 下次强制 initialize_qp()
+    solved_once_   = false; // 绕过一次时间限速
+    model_ready_   = false; // 强制按当前腿长重建 A/B/F/H
 }
 
 /**

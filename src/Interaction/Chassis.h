@@ -208,6 +208,7 @@ private:
 
     float Now_height = 0;
     float Now_dheight = 0;
+    float Now_dheight_f = 0;      // Now_dheight 的一阶低通（给 MPC 用，抑制编码器噪声）
 
     float Velocity_filter = 0; 
     float X_filter = 0; 

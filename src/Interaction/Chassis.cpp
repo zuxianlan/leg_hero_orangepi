@@ -158,7 +158,11 @@ void class_Chassis::feedback_update()
     dtheta_err = left_leg.Get_dtheta() - right_leg.Get_dtheta();
     // ========== 当前身体高度与高度变化率（考虑roll角补偿） ==========
     Now_height = (left_leg.Get_L0() * cosf(INS->roll) + right_leg.Get_L0() * cosf(INS->roll)) / 2;
-    Now_dheight = (left_leg.Get_dL0() * cosf(INS->roll) + right_leg.Get_dL0() * cosf(INS->roll)) / 2;
+    // dH 来自关节速度的解析组合，带编码器噪声；F=P 之后 K_dh 从 44 涨到 300+ N/(m/s)，
+    // 不滤波会把噪声放大成明显的腿抖。这里加 20Hz 一阶低通（alpha=0.118 @1kHz）。
+    const float raw_dheight = (left_leg.Get_dL0() * cosf(INS->roll) + right_leg.Get_dL0() * cosf(INS->roll)) / 2.0f;
+    Now_dheight_f += 0.118f * (raw_dheight - Now_dheight_f);
+    Now_dheight = Now_dheight_f;
 
     Fitting_K_Calc(Fitting_K, P, left_leg.Get_L0(), right_leg.Get_L0());
 
@@ -702,6 +706,22 @@ void class_Chassis::Ground_Detection()
 
 void class_Chassis::MPC_Body_Calc()
 {
+    // 检测"从别的模式切回正常行驶"：本函数只在 Follow_Gimbal_Control 里调用，
+    // 若距上次调用超过 10ms，说明刚切进来 -> 参考从当前高度起步 + 复位 MPC
+    static std::chrono::steady_clock::time_point last_call{};
+    const auto now_tp = std::chrono::steady_clock::now();
+    const bool just_entered =
+        (last_call.time_since_epoch().count() == 0) ||
+        (std::chrono::duration<double>(now_tp - last_call).count() > 0.010);
+    last_call = now_tp;
+
+    if (just_entered)
+    {
+        current_ref_height  = Now_height;   // 参考从当前高度开始，避免第一步就产生大误差
+        current_ref_dheight = 0.0f;
+        MPC_body.Reset();                   // 丢弃 QP 工作集，按当前腿长重建
+    }
+
     // ================= 高度参考：一阶速率限幅 =================
     // 为什么不用五次多项式规划器：
     //   MoveTo(Now_height, Target_height, Now_dheight, ...) 的起始速度取的是【实测】Now_dheight，
